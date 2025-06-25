@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Optional, Generator
 import pandas as pd
 import requests
-from github import Github, PullRequest
+from github import Github
 from github.GithubException import RateLimitExceededException
 
 from .config import Config, DEFAULT_CONFIG
@@ -56,15 +56,36 @@ class GitHubDataCollector:
                     break
                 
                 try:
-                    # Only collect merged PRs with valid data
+                    # Only process merged PRs with valid data
                     if pr.merged and pr.merged_at and pr.created_at:
-                        data = self._extract_pr_features(pr)
-                        pr_data.append(data)
-                        count += 1
-                        
-                        if count % 50 == 0:
-                            logger.info(f"Collected {count} PRs...")
+                        if self._is_bot_author(pr):
+                            # Log when we skip bot PRs
+                            bot_name = pr.user.login if pr.user else "unknown"
+                            logger.debug(f"Skipped bot PR #{pr.number} by {bot_name}")
+                        else:
+                            # Process human-authored PRs
+                            data = self._extract_pr_features(pr)
+                            pr_data.append(data)
+                            count += 1
                             
+                            # Log details about each PR processed
+                            merge_time_hours = data.get('merge_time_hours', 0)
+                            merge_time_days = merge_time_hours / 24
+                            pr_title = pr.title[:60] + "..." if len(pr.title) > 60 else pr.title
+                            
+                            # Calculate total time for comparison
+                            total_time_hours = (pr.merged_at - pr.created_at).total_seconds() / 3600
+                            draft_time_hours = total_time_hours - merge_time_hours
+                            
+                            draft_info = f" (excl. {draft_time_hours:.1f}h draft)" if draft_time_hours > 0.1 else ""
+                            
+                            logger.info(f"Processed PR #{pr.number}: '{pr_title}' | "
+                                      f"Merge time: {merge_time_hours:.1f}h ({merge_time_days:.1f}d){draft_info} | "
+                                      f"Files: {pr.changed_files}, +{pr.additions}/-{pr.deletions}")
+                            
+                            if count % 50 == 0:
+                                logger.info(f"--- Collected {count} PRs so far ---")
+                        
                 except Exception as e:
                     logger.warning(f"Error processing PR #{pr.number}: {e}")
                     continue
@@ -78,7 +99,7 @@ class GitHubDataCollector:
         logger.info(f"Collected {len(df)} PRs from {repo_name}")
         return df
     
-    def _extract_pr_features(self, pr: PullRequest) -> Dict:
+    def _extract_pr_features(self, pr) -> Dict:
         """
         Extract features from a single PR.
         
@@ -88,8 +109,12 @@ class GitHubDataCollector:
         Returns:
             Dictionary with PR features
         """
-        # Calculate merge time in hours
-        merge_time_hours = (pr.merged_at - pr.created_at).total_seconds() / 3600
+        # Calculate merge time in hours (only for merged PRs), excluding draft time
+        merge_time_hours = None
+        if pr.merged_at and pr.created_at:
+            total_time_hours = (pr.merged_at - pr.created_at).total_seconds() / 3600
+            draft_time_hours = self._calculate_draft_time(pr)
+            merge_time_hours = max(0, total_time_hours - draft_time_hours)  # Ensure non-negative
         
         # Get review data
         reviews = list(pr.get_reviews())
@@ -112,17 +137,16 @@ class GitHubDataCollector:
         additions = pr.additions
         deletions = pr.deletions
         
-        # Get author info
-        author_association = pr.author_association
+        # Get author info - handle cases where author_association might not exist
+        author_association = getattr(pr, 'author_association', 'NONE')
         
         # Check if it's a draft PR
         is_draft = pr.draft if hasattr(pr, 'draft') else False
         
-        return {
+        result = {
             'pr_number': pr.number,
             'title': pr.title,
             'body': pr.body or '',
-            'merge_time_hours': merge_time_hours,
             'review_count': review_count,
             'comment_count': comment_count,
             'commit_count': commit_count,
@@ -137,6 +161,115 @@ class GitHubDataCollector:
             'merged_at': pr.merged_at,
             'repository': pr.base.repo.full_name
         }
+        
+        # Only include merge_time_hours for merged PRs
+        if merge_time_hours is not None:
+            result['merge_time_hours'] = merge_time_hours
+            
+        return result
+    
+    def _is_bot_author(self, pr) -> bool:
+        """
+        Check if a PR was authored by a bot.
+        
+        Args:
+            pr: GitHub PullRequest object
+            
+        Returns:
+            True if authored by a bot, False otherwise
+        """
+        try:
+            author = pr.user
+            if not author:
+                return False
+                
+            # Check if user type is Bot
+            if hasattr(author, 'type') and author.type == 'Bot':
+                return True
+                
+            # Check for common bot username patterns
+            username = author.login.lower()
+            bot_patterns = [
+                '[bot]',
+                'bot-',
+                '-bot',
+                'dependabot',
+                'renovate',
+                'github-actions',
+                'codecov',
+                'greenkeeper',
+                'snyk-bot',
+                'whitesource'
+            ]
+            
+            return any(pattern in username for pattern in bot_patterns)
+            
+        except Exception:
+            # If we can't determine, assume it's not a bot
+            return False
+    
+    def _calculate_draft_time(self, pr) -> float:
+        """
+        Calculate the total time a PR spent in draft state.
+        
+        Args:
+            pr: GitHub PullRequest object
+            
+        Returns:
+            Draft time in hours
+        """
+        try:
+            # Get timeline events for the PR
+            timeline = list(pr.get_timeline())
+            draft_time_hours = 0.0
+            current_draft_start = None
+            
+            # Check timeline events to determine draft history
+            ready_for_review_events = []
+            converted_to_draft_events = []
+            
+            for event in timeline:
+                if hasattr(event, 'event'):
+                    if event.event == 'ready_for_review':
+                        ready_for_review_events.append(event.created_at)
+                    elif event.event == 'converted_to_draft':
+                        converted_to_draft_events.append(event.created_at)
+            
+            # If there's a 'ready_for_review' event, PR was created as draft
+            if ready_for_review_events:
+                current_draft_start = pr.created_at
+            
+            # Process draft/ready cycles chronologically
+            all_events = []
+            for timestamp in ready_for_review_events:
+                all_events.append(('ready_for_review', timestamp))
+            for timestamp in converted_to_draft_events:
+                all_events.append(('converted_to_draft', timestamp))
+            
+            # Sort events by timestamp
+            all_events.sort(key=lambda x: x[1])
+            
+            for event_type, event_time in all_events:
+                if event_type == 'converted_to_draft':
+                    # PR became draft
+                    current_draft_start = event_time
+                elif event_type == 'ready_for_review':
+                    # PR became ready for review
+                    if current_draft_start:
+                        draft_period = (event_time - current_draft_start).total_seconds() / 3600
+                        draft_time_hours += draft_period
+                        current_draft_start = None
+            
+            # If PR is still draft when merged (shouldn't happen but just in case)
+            if current_draft_start and pr.merged_at:
+                final_draft_period = (pr.merged_at - current_draft_start).total_seconds() / 3600
+                draft_time_hours += final_draft_period
+            
+            return draft_time_hours
+            
+        except Exception as e:
+            logger.debug(f"Could not calculate draft time for PR #{pr.number}: {e}")
+            return 0.0
     
     def collect_multiple_repos(self, repo_names: List[str], limit_per_repo: Optional[int] = None) -> pd.DataFrame:
         """

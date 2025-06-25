@@ -11,5 +11,6 @@ __author__ = "AI PR Timeline Team"
 from .predictor import PRTimelinePredictor
 from .data_collector import GitHubDataCollector
 from .model_trainer import ModelTrainer
+from .config import Config
 
-__all__ = ["PRTimelinePredictor", "GitHubDataCollector", "ModelTrainer"] 
+__all__ = ["PRTimelinePredictor", "GitHubDataCollector", "ModelTrainer", "Config"] 

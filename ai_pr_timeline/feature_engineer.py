@@ -4,11 +4,11 @@ Feature engineering module for processing PR data.
 
 import logging
 import re
-from typing import List, Tuple
+from typing import Tuple, Optional
 import pandas as pd
 import numpy as np
 from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.preprocessing import StandardScaler, LabelEncoder
+from sklearn.preprocessing import StandardScaler
 
 from .config import Config, DEFAULT_CONFIG
 
@@ -23,7 +23,7 @@ class FeatureEngineer:
         self.scaler = StandardScaler()
         self.label_encoders = {}
     
-    def engineer_features(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, pd.Series]:
+    def engineer_features(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, Optional[pd.Series]]:
         """
         Engineer features from raw PR data.
         
@@ -38,8 +38,9 @@ class FeatureEngineer:
         # Create a copy to avoid modifying original data
         features_df = df.copy()
         
-        # Remove outliers (PRs that took more than 30 days)
-        features_df = features_df[features_df['merge_time_hours'] <= 24 * 30]
+        # Remove outliers (PRs that took more than 30 days) - only for training data
+        if 'merge_time_hours' in features_df.columns:
+            features_df = features_df[features_df['merge_time_hours'] <= 24 * 30]
         
         # Basic numerical features
         numerical_features = [
@@ -67,16 +68,18 @@ class FeatureEngineer:
         )
         
         # Time-based features
-        features_df['is_weekend'] = features_df['created_day'].isin([5, 6])  # Saturday, Sunday
+        features_df['is_weekend'] = (features_df['created_day'] == 5) | (features_df['created_day'] == 6)  # Saturday, Sunday
         features_df['is_business_hours'] = (
             (features_df['created_hour'] >= 9) & 
             (features_df['created_hour'] <= 17)
         )
         
         # Categorical features
-        features_df['author_is_member'] = features_df['author_association'].isin([
-            'MEMBER', 'OWNER', 'COLLABORATOR'
-        ])
+        features_df['author_is_member'] = (
+            (features_df['author_association'] == 'MEMBER') |
+            (features_df['author_association'] == 'OWNER') |
+            (features_df['author_association'] == 'COLLABORATOR')
+        )
         
         # Text features
         if self.config.include_text_features:
@@ -95,8 +98,8 @@ class FeatureEngineer:
         # Handle missing values
         features_df = features_df.fillna(0)
         
-        # Extract target variable
-        target = features_df['merge_time_hours']
+        # Extract target variable (only exists for training data)
+        target = features_df['merge_time_hours'] if 'merge_time_hours' in features_df.columns else None
         
         # Select and return features
         final_features = features_df[feature_columns]
