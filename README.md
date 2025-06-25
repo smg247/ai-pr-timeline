@@ -1,26 +1,17 @@
-# AI PR Timeline Prediction Plugin
+# AI PR Timeline Predictor
 
-A Python plugin for predicting pull request merge times using machine learning and historical GitHub data.
-
-## Overview
-
-This plugin uses machine learning to predict how long a pull request will take to merge based on historical data from GitHub repositories. It analyzes various factors such as:
-
-- PR size (lines changed, files modified)
-- Team activity (reviews, comments, commits)
-- Timing patterns (creation time, day of week)
-- Author information (association with project)
-- Text analysis of PR title and description
+A machine learning tool that predicts how long GitHub pull requests will take to merge based on historical data and PR characteristics.
 
 ## Features
 
-- **Multiple ML Models**: Support for Random Forest, XGBoost, and LightGBM
-- **GitHub API Integration**: Automatic data collection from GitHub repositories  
-- **Feature Engineering**: Smart extraction of predictive features from PR data
-- **Batch Processing**: Train on multiple repositories and predict for multiple PRs
-- **Text Analysis**: Optional NLP features from PR titles and descriptions
-- **Comprehensive Metrics**: Detailed model evaluation and feature importance
-- **Easy Integration**: Simple API for integration into other tools
+- **Smart Data Collection**: Efficiently collects PR data from GitHub repositories with intelligent caching
+- **Advanced Feature Engineering**: Extracts and balances structural and text features for optimal predictions
+- **Multiple ML Models**: Supports Random Forest, XGBoost, and LightGBM algorithms
+- **Training Cache System**: Reduces API usage by caching processed PR data locally
+- **API Call Monitoring**: Tracks and logs all GitHub API calls with detailed statistics
+- **Flexible Training Options**: Control data collection with granular parameters
+- **Batch Predictions**: Predict timelines for multiple PRs across repositories
+- **Feature Balancing**: Intelligently weights text vs structural features for better accuracy
 
 ## Installation
 
@@ -30,207 +21,331 @@ git clone https://github.com/your-username/ai-pr-timeline.git
 cd ai-pr-timeline
 ```
 
-2. Install dependencies:
+2. Create and activate a virtual environment:
+```bash
+python -m venv venv
+source venv/bin/activate  # On Windows: venv\Scripts\activate
+```
+
+3. Install dependencies:
 ```bash
 pip install -r requirements.txt
 ```
 
-3. Set up your GitHub token:
+4. Set up your GitHub token:
 ```bash
 export GITHUB_TOKEN="your_github_personal_access_token"
-```
-
-Or create a `.env` file:
-```bash
-cp .env.example .env
-# Edit .env and add your GitHub token
 ```
 
 ## Quick Start
 
 ### 1. Train a Model
 
-Train on a single repository:
+Train a model on a specific repository:
+
 ```bash
-python examples/train_model.py --repo "microsoft/vscode" --model-type random_forest
+python commands/train_model.py \
+  --repo "microsoft/vscode" \
+  --model-type random_forest \
+  --max-prs 500 \
+  --max-new-prs 100
 ```
 
-Train on multiple repositories:
-```python
-from ai_pr_timeline import PRTimelinePredictor, Config
-
-config = Config()
-config.github_token = "your_token"
-
-predictor = PRTimelinePredictor(config)
-results = predictor.train_on_repositories([
-    "microsoft/vscode",
-    "facebook/react", 
-    "google/tensorflow"
-])
-
-print(f"Model R² Score: {results['metrics']['r2']:.3f}")
-print(f"Mean Absolute Error: {results['metrics']['mae']:.1f} hours")
-```
+Key parameters:
+- `--max-prs`: Total PRs to use for training (including cached)
+- `--max-new-prs`: Maximum new PRs to fetch from API (0 = use only cache)
+- `--text-weight`: Weight for text features (0.0-1.0, default: 0.3)
+- `--max-text-features`: Number of text features to extract (default: 50)
 
 ### 2. Make Predictions
 
-Predict for a specific PR:
+Predict timeline for a specific PR:
+
 ```bash
-python examples/predict_pr.py --repo "microsoft/vscode" --pr-number 123 --model "your_model.pkl"
+python commands/predict_pr.py \
+  --repo "microsoft/vscode" \
+  --pr-number 12345 \
+  --model "your_model.pkl"
 ```
 
-Predict programmatically:
+### 3. Batch Predictions
+
+Create a file with repository names (one per line):
+```bash
+echo "microsoft/vscode" > my_repos.txt
+echo "facebook/react" >> my_repos.txt
+```
+
+Run batch predictions:
+```bash
+python commands/batch_predict.py \
+  --repos-file my_repos.txt \
+  --model "your_model.pkl" \
+  --output results.csv
+```
+
+## Core Components
+
+### Data Collection (`GitHubDataCollector`)
+
+Efficiently collects PR data with:
+- **Training Cache**: Stores processed PR data to reduce API calls
+- **Bot Detection**: Automatically filters out bot-authored PRs
+- **Draft Time Calculation**: Excludes draft periods from merge time calculations
+- **API Call Tracking**: Monitors and logs all GitHub API interactions
+- **Rate Limit Handling**: Automatically handles GitHub API rate limits
+
+### Feature Engineering (`FeatureEngineer`)
+
+Extracts and processes features:
+
+**Structural Features** (16 features):
+- Code metrics: files changed, additions, deletions, lines changed
+- Activity metrics: review count, comment count, commit count
+- Ratios: addition ratio, files per addition, reviews per commit
+- Time features: created hour/day, business hours, weekend flags
+- PR metadata: draft status, author association
+
+**Text Features** (up to 50 features):
+- TF-IDF vectors from PR titles and descriptions
+- Advanced preprocessing with stop words and n-grams
+- Balanced weighting to prevent text feature dominance
+
+**Feature Balancing**:
+- Text features weighted by configurable factor (default: 0.3)
+- Prevents text features from overwhelming structural features
+- Maintains interpretability while leveraging text signals
+
+### Model Training (`ModelTrainer`)
+
+Supports multiple algorithms:
+- **Random Forest**: Robust ensemble method with feature importance
+- **XGBoost**: Gradient boosting with advanced regularization
+- **LightGBM**: Fast gradient boosting optimized for large datasets
+
+Features:
+- Hyperparameter tuning with GridSearchCV
+- Cross-validation for model validation
+- Comprehensive evaluation metrics (MAE, RMSE, R², MAPE)
+- Feature importance analysis
+- Model persistence with metadata
+
+### Training Cache System
+
+Intelligent caching reduces API usage:
+- **File Structure**: `training_cache/{owner}_{repo}/pr_{number}.json`
+- **Cache Validation**: Hash-based integrity checking
+- **Automatic Updates**: Refreshes stale cache entries
+- **Repository Management**: Per-repo cache organization
+- **Statistics**: Detailed cache usage reporting
+
+## Advanced Usage
+
+### Training with Cache Control
+
+```bash
+# Use only cached data (no API calls for new PRs)
+python commands/train_model.py \
+  --repo "owner/repo" \
+  --max-prs 1000 \
+  --max-new-prs 0
+
+# Fetch up to 50 new PRs from API, use rest from cache
+python commands/train_model.py \
+  --repo "owner/repo" \
+  --max-prs 1000 \
+  --max-new-prs 50
+
+# Custom feature balancing
+python commands/train_model.py \
+  --repo "owner/repo" \
+  --text-weight 0.1 \
+  --max-text-features 20
+```
+
+### Model Types and Hyperparameter Tuning
+
+```bash
+# Train XGBoost with hyperparameter tuning
+python commands/train_model.py \
+  --repo "owner/repo" \
+  --model-type xgboost \
+  --tune-hyperparams
+
+# Train LightGBM model
+python commands/train_model.py \
+  --repo "owner/repo" \
+  --model-type lightgbm
+```
+
+### Custom Output Filenames
+
+```bash
+# Specify custom model filename
+python commands/train_model.py \
+  --repo "owner/repo" \
+  --output-filename "my_custom_model.pkl"
+
+# Auto-generated timestamped filename (default)
+# Creates: owner_repo_random_forest_model_20241225_143022.pkl
+```
+
+## Configuration
+
+The system uses a `Config` class with these key settings:
+
 ```python
-from ai_pr_timeline import PRTimelinePredictor
+# Feature Engineering
+include_text_features: bool = True
+max_text_features: int = 50  # Reduced for better balance
+text_feature_weight: float = 0.3  # Weight for text features
 
-predictor = PRTimelinePredictor()
-predictor.load_trained_model("your_model.pkl")
+# Data Collection  
+max_prs_per_repo: int = 1000
+min_data_points: int = 50
 
-result = predictor.predict_from_github_pr("microsoft/vscode", 123)
-print(f"Predicted timeline: {result['predicted_hours']:.1f} hours")
-print(f"Category: {result['time_category']}")
+# Model Training
+model_type: str = "random_forest"
+test_size: float = 0.2
+random_state: int = 42
+
+# Directories
+training_cache_dir: str = "training_cache"
+model_dir: str = "models"
+data_dir: str = "data"
 ```
 
-### 3. Batch Processing
+## API Usage Monitoring
 
-Process multiple repositories:
-```bash
-python examples/batch_predict.py --repos-file examples/repos.txt --model "your_model.pkl" --output results.csv
+The system tracks all GitHub API calls:
+
+```
+API Call #1: GET /repos/microsoft/vscode - Getting repository info
+API Call #2: GET /repos/microsoft/vscode/pulls - Getting closed PRs
+API Call #3: GET /repos/microsoft/vscode/pulls/12345/reviews - PR #12345 reviews
+...
+Total API calls made: 156
 ```
 
-## API Reference
+This helps you:
+- Monitor API quota usage
+- Optimize data collection strategies
+- Debug collection issues
+- Plan cache usage effectively
 
-### PRTimelinePredictor
+## Performance Optimization
 
-Main interface for training and prediction.
+### Feature Balancing Results
 
-#### Methods
+Before optimization:
+- 16 structural + 1000 text features = 1016 total
+- Text-to-structural ratio: 62.5:1
+- Text features dominated model decisions
 
-- `train_on_repository(repo_name, save_model=True)` - Train on single repository
-- `train_on_repositories(repo_names, save_model=True)` - Train on multiple repositories  
-- `train_on_data(df, save_model=True)` - Train on provided DataFrame
-- `load_trained_model(filename)` - Load a pre-trained model
-- `predict_pr_timeline(pr_data)` - Predict from PR data dictionary
-- `predict_from_github_pr(repo_name, pr_number)` - Predict directly from GitHub
-- `get_model_info()` - Get model information and metrics
-- `benchmark_predictions(test_data)` - Evaluate model on test data
+After optimization:  
+- 16 structural + 50 text features = 66 total
+- Effective ratio after weighting: 0.9:1
+- Structural features maintain dominance
 
-### Configuration
+### Cache Efficiency
 
-Customize behavior through the `Config` class:
+Typical cache hit rates:
+- **First run**: 0% cache hits, ~200-400 API calls
+- **Subsequent runs**: 80-95% cache hits, ~10-50 API calls
+- **Cache-only runs** (`--max-new-prs 0`): 100% cache hits, ~2 API calls
 
-```python
-from ai_pr_timeline import Config
+## Model Performance
 
-config = Config()
-config.model_type = "xgboost"  # or "random_forest", "lightgbm"
-config.max_prs_per_repo = 500
-config.include_text_features = True
-config.max_text_features = 1000
-```
+Typical performance metrics on well-represented repositories:
 
-## Model Features
-
-The plugin automatically extracts these features from PR data:
-
-### Basic Features
-- Review count, comment count, commit count
-- Files changed, lines added/deleted
-- Creation hour and day of week
-- Author association (member, contributor, etc.)
-- Draft status
-
-### Derived Features  
-- Total changes (additions + deletions)
-- Change ratio (additions / deletions)
-- Files per commit
-- Changes per file
-- Weekend creation flag
-- Business hours creation flag
-
-### Text Features (Optional)
-- TF-IDF vectors from PR title and description
-- Cleaned text without code blocks and URLs
-- N-gram analysis (1-gram and 2-gram)
-
-### Feature Balancing
-
-To ensure structural features (like code changes, reviews) don't get overwhelmed by text features, the system includes intelligent feature balancing:
-
-- **Reduced Text Features**: Default 50 text features (vs 1000 previously)
-- **Feature Weighting**: Text features weighted at 30% of structural features
-- **Smart TF-IDF**: Filters common/rare terms with `min_df=2`, `max_df=0.8`
-- **Sublinear Scaling**: Reduces impact of high-frequency terms
-
-Configure feature balancing:
-```bash
-# Conservative text influence
-python examples/train_model.py --repo "owner/repo" --text-weight 0.1 --max-text-features 20
-
-# Disable text features entirely  
-python examples/train_model.py --repo "owner/repo" --text-weight 0.0
-
-# View feature balance demonstration
-python examples/feature_balance_demo.py
-```
-
-## Performance
-
-Typical model performance on well-established repositories:
-
-- **Mean Absolute Error**: 8-24 hours
-- **R² Score**: 0.3-0.7 
-- **Accuracy within 1 day**: 60-80%
-- **Accuracy within 1 week**: 85-95%
+- **MAE (Mean Absolute Error)**: 8-24 hours
+- **RMSE (Root Mean Squared Error)**: 15-45 hours  
+- **R² Score**: 0.3-0.7
+- **MAPE (Mean Absolute Percentage Error)**: 25-60%
 
 Performance varies significantly based on:
-- Repository size and activity
-- Team processes and consistency  
-- Amount of training data
-- Feature engineering quality
+- Repository characteristics and consistency
+- Amount of training data available
+- Feature quality and completeness
+- Model type and hyperparameters
 
-## Examples
+## File Structure
 
-See the `examples/` directory for complete usage examples:
+```
+ai-pr-timeline/
+├── ai_pr_timeline/           # Main package
+│   ├── __init__.py
+│   ├── config.py            # Configuration settings
+│   ├── data_collector.py    # GitHub data collection
+│   ├── feature_engineer.py  # Feature extraction and processing
+│   ├── model_trainer.py     # ML model training and evaluation
+│   ├── predictor.py         # Main prediction interface
+│   ├── training_cache.py    # Cache management system
+│   └── utils.py             # Utility functions
+├── commands/                 # Command-line tools
+│   ├── train_model.py       # Model training command
+│   ├── predict_pr.py        # Single PR prediction
+│   └── batch_predict.py     # Batch prediction tool
+├── training_cache/          # Cached PR data (auto-created)
+├── models/                  # Trained models (auto-created)
+├── data/                    # Raw data exports (auto-created)
+└── tests/                   # Test suite
+```
 
-- `train_model.py` - Train a model on repository data
-- `predict_pr.py` - Make predictions for specific PRs
-- `batch_predict.py` - Batch processing for multiple PRs
-- `repos.txt` - Example repository list
+## Troubleshooting
 
-## Testing
+### Common Issues
 
-Run the test suite:
+**API Rate Limits**:
+- Use `--max-new-prs` to limit API calls
+- Leverage cache with `--max-new-prs 0`
+- Spread data collection across multiple sessions
+
+**Insufficient Training Data**:
+- Increase `--max-prs` parameter
+- Use repositories with more historical PRs
+- Combine multiple repositories for training
+
+**Poor Model Performance**:
+- Ensure sufficient training data (>100 PRs recommended)
+- Try different model types (`--model-type`)
+- Adjust feature balancing (`--text-weight`)
+- Enable hyperparameter tuning (`--tune-hyperparams`)
+
+**Cache Issues**:
+- Check `training_cache/` directory permissions
+- Clear cache for specific repo if corrupted
+- Verify GitHub token has proper repository access
+
+### Debug Mode
+
+Enable detailed logging:
 ```bash
-python -m pytest tests/
+export PYTHONPATH=.
+python -c "
+import logging
+logging.basicConfig(level=logging.DEBUG)
+# Run your command here
+"
 ```
 
 ## Contributing
 
 1. Fork the repository
-2. Create a feature branch
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
 3. Make your changes
 4. Add tests for new functionality
-5. Submit a pull request
+5. Ensure all tests pass (`python -m pytest`)
+6. Commit your changes (`git commit -m 'Add amazing feature'`)
+7. Push to the branch (`git push origin feature/amazing-feature`)
+8. Open a Pull Request
 
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-## Limitations
+## Acknowledgments
 
-- Requires significant historical data (50+ merged PRs minimum)
-- Performance varies by repository and team practices
-- Predictions are estimates with confidence intervals
-- GitHub API rate limiting may slow data collection
-- Text features require additional processing time
-
-## Roadmap
-
-- [ ] Support for GitLab and other platforms
-- [ ] Real-time model updates
-- [ ] Integration with popular CI/CD tools
-- [ ] Web dashboard for visualization
-- [ ] Advanced ensemble models
-- [ ] Automated hyperparameter tuning
+- Built with scikit-learn, XGBoost, and LightGBM
+- Uses PyGithub for GitHub API integration
+- Inspired by the need for better PR workflow planning
