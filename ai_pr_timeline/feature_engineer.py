@@ -60,10 +60,16 @@ class FeatureEngineer:
         # Handle missing values
         features = self._handle_missing_values(features)
 
+        # Balance feature importance between text and structural features
+        features = self._balance_feature_weights(features)
+
         # Ensure features is a DataFrame
         if not isinstance(features, pd.DataFrame):
             features = pd.DataFrame(features)
 
+        # Log feature distribution for transparency
+        self._log_feature_distribution(features)
+        
         logger.info(f"Engineered {len(features.columns)} features")
 
         # Extract target variable if requested and available
@@ -156,7 +162,10 @@ class FeatureEngineer:
                     max_features=self.config.max_text_features,
                     stop_words='english',
                     lowercase=True,
-                    ngram_range=(1, 2)
+                    ngram_range=(1, 2),
+                    min_df=2,  # Ignore terms that appear in fewer than 2 documents
+                    max_df=0.8,  # Ignore terms that appear in more than 80% of documents
+                    sublinear_tf=True  # Apply sublinear tf scaling to reduce impact of high-frequency terms
                 )
 
             # Fit and transform text data
@@ -192,6 +201,51 @@ class FeatureEngineer:
         df[numeric_columns] = df[numeric_columns].fillna(0)
 
         return df
+
+    def _balance_feature_weights(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Balance the influence of text features vs structural features.
+        
+        Text features are reduced in magnitude to prevent them from dominating
+        the model due to their large number (up to max_text_features).
+        
+        Args:
+            df: DataFrame with all features
+            
+        Returns:
+            DataFrame with balanced feature weights
+        """
+        # Identify text features (TF-IDF features)
+        text_cols = [col for col in df.columns if col.startswith('tfidf_')]
+        
+        if text_cols:
+            # Apply weighting factor to reduce text feature influence
+            # This helps structural features (like files_changed, review_count) 
+            # maintain their importance relative to text features
+            text_weight_factor = self.config.text_feature_weight
+            
+            df_balanced = df.copy()
+            df_balanced[text_cols] = df_balanced[text_cols] * text_weight_factor
+            
+            logger.info(f"Applied feature balancing: {len(text_cols)} text features (weighted by {text_weight_factor})")
+            
+            return df_balanced
+        
+        return df
+
+    def _log_feature_distribution(self, df: pd.DataFrame) -> None:
+        """Log the distribution of feature types for transparency."""
+        text_cols = [col for col in df.columns if col.startswith('tfidf_')]
+        structural_cols = [col for col in df.columns if not col.startswith('tfidf_')]
+        
+        logger.info(f"Feature distribution: {len(structural_cols)} structural, "
+                   f"{len(text_cols)} text features")
+        
+        if text_cols and structural_cols:
+            # Calculate ratio for transparency
+            ratio = len(text_cols) / len(structural_cols)
+            logger.info(f"Text-to-structural feature ratio: {ratio:.1f}:1 "
+                       f"(weighted by {self.config.text_feature_weight})")
 
     def scale_features(self, X_train: pd.DataFrame,
                       X_test: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:

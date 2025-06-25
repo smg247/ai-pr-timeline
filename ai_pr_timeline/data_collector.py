@@ -76,7 +76,7 @@ class GitHubDataCollector:
         pr_data = cached_prs.copy()  # Start with cached data
         count = len(pr_data)
         max_prs = limit or self.config.max_prs_per_repo
-        max_new = max_new_prs or max_prs
+        max_new = max_new_prs if max_new_prs is not None else max_prs
         
         # Validate max_new_prs parameter
         if max_new > max_prs:

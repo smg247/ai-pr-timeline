@@ -154,6 +154,27 @@ The plugin automatically extracts these features from PR data:
 - Cleaned text without code blocks and URLs
 - N-gram analysis (1-gram and 2-gram)
 
+### Feature Balancing
+
+To ensure structural features (like code changes, reviews) don't get overwhelmed by text features, the system includes intelligent feature balancing:
+
+- **Reduced Text Features**: Default 50 text features (vs 1000 previously)
+- **Feature Weighting**: Text features weighted at 30% of structural features
+- **Smart TF-IDF**: Filters common/rare terms with `min_df=2`, `max_df=0.8`
+- **Sublinear Scaling**: Reduces impact of high-frequency terms
+
+Configure feature balancing:
+```bash
+# Conservative text influence
+python examples/train_model.py --repo "owner/repo" --text-weight 0.1 --max-text-features 20
+
+# Disable text features entirely  
+python examples/train_model.py --repo "owner/repo" --text-weight 0.0
+
+# View feature balance demonstration
+python examples/feature_balance_demo.py
+```
+
 ## Performance
 
 Typical model performance on well-established repositories:

@@ -22,7 +22,8 @@ class Config:
 
     # Feature engineering settings
     include_text_features: bool = True
-    max_text_features: int = 1000
+    max_text_features: int = 50  # Reduced from 1000 to balance with structural features
+    text_feature_weight: float = 0.3  # Weight factor for text features (0.0-1.0)
 
     # Data collection settings
     max_prs_per_repo: int = 1000

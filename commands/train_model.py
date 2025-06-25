@@ -37,6 +37,10 @@ def main():
                        help='Maximum number of PRs to collect')
     parser.add_argument('--max-new-prs', type=int,
                        help='Maximum number of new PRs to fetch from API (must be <= max-prs)')
+    parser.add_argument('--text-weight', type=float, default=0.3,
+                       help='Weight factor for text features (0.0-1.0, default: 0.3)')
+    parser.add_argument('--max-text-features', type=int, default=50,
+                       help='Maximum number of text features to extract (default: 50)')
     parser.add_argument('--output-filename', 
                        help='Custom filename for the saved model (default: auto-generated with timestamp)')
     
@@ -47,6 +51,8 @@ def main():
     config.github_token = args.token or os.getenv('GITHUB_TOKEN')
     config.model_type = args.model_type
     config.max_prs_per_repo = args.max_prs
+    config.text_feature_weight = args.text_weight
+    config.max_text_features = args.max_text_features
     
     if not config.github_token:
         print("Error: GitHub token is required. Set GITHUB_TOKEN environment variable or use --token")
@@ -55,6 +61,16 @@ def main():
     # Validate max-new-prs parameter
     if args.max_new_prs and args.max_new_prs > args.max_prs:
         print(f"Error: --max-new-prs ({args.max_new_prs}) cannot be greater than --max-prs ({args.max_prs})")
+        sys.exit(1)
+    
+    # Validate text-weight parameter
+    if not 0.0 <= args.text_weight <= 1.0:
+        print(f"Error: --text-weight ({args.text_weight}) must be between 0.0 and 1.0")
+        sys.exit(1)
+    
+    # Validate max-text-features parameter
+    if args.max_text_features < 1:
+        print(f"Error: --max-text-features ({args.max_text_features}) must be at least 1")
         sys.exit(1)
     
     try:
@@ -66,6 +82,7 @@ def main():
         print(f"Max PRs to collect: {args.max_prs}")
         if args.max_new_prs:
             print(f"Max new PRs from API: {args.max_new_prs}")
+        print(f"Text feature settings: max={args.max_text_features}, weight={args.text_weight}")
         print("-" * 50)
         
         # Reset API call counter for training
