@@ -1,223 +1,223 @@
 """
-Feature engineering module for processing PR data.
+Feature engineering module for PR timeline prediction.
 """
 
 import logging
-import re
 from typing import Tuple, Optional
 import pandas as pd
 import numpy as np
-from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.preprocessing import StandardScaler
+from sklearn.feature_extraction.text import TfidfVectorizer
 
 from .config import Config, DEFAULT_CONFIG
 
 logger = logging.getLogger(__name__)
 
+
 class FeatureEngineer:
-    """Processes and engineers features from raw PR data."""
-    
+    """Handles feature engineering for PR data."""
+
     def __init__(self, config: Config = DEFAULT_CONFIG):
         self.config = config
-        self.text_vectorizer = None
         self.scaler = StandardScaler()
         self.label_encoders = {}
-    
-    def engineer_features(self, df: pd.DataFrame) -> Tuple[pd.DataFrame, Optional[pd.Series]]:
+        self.tfidf_vectorizer = None
+        self.is_fitted = False
+
+    def engineer_features(self, df: pd.DataFrame,
+                         include_target: bool = True) -> Tuple[pd.DataFrame, Optional[pd.Series]]:
         """
         Engineer features from raw PR data.
-        
+
         Args:
             df: Raw PR data DataFrame
-            
+            include_target: Whether to include target variable (merge_time_hours)
+
         Returns:
-            Tuple of (features DataFrame, target Series)
+            Tuple of (features_df, target_series) or (features_df, None)
         """
         logger.info("Engineering features from PR data")
-        
-        # Create a copy to avoid modifying original data
-        features_df = df.copy()
-        
-        # Remove outliers (PRs that took more than 30 days) - only for training data
-        if 'merge_time_hours' in features_df.columns:
-            features_df = features_df[features_df['merge_time_hours'] <= 24 * 30]
-        
-        # Basic numerical features
-        numerical_features = [
-            'review_count', 'comment_count', 'commit_count',
-            'files_changed', 'additions', 'deletions',
-            'created_hour', 'created_day'
-        ]
-        
-        # Create derived features
-        features_df['total_changes'] = features_df['additions'] + features_df['deletions']
-        features_df['change_ratio'] = np.where(
-            features_df['deletions'] > 0,
-            features_df['additions'] / features_df['deletions'],
-            features_df['additions']
-        )
-        features_df['files_per_commit'] = np.where(
-            features_df['commit_count'] > 0,
-            features_df['files_changed'] / features_df['commit_count'],
-            0
-        )
-        features_df['changes_per_file'] = np.where(
-            features_df['files_changed'] > 0,
-            features_df['total_changes'] / features_df['files_changed'],
-            0
-        )
-        
-        # Time-based features
-        features_df['is_weekend'] = (features_df['created_day'] == 5) | (features_df['created_day'] == 6)  # Saturday, Sunday
-        features_df['is_business_hours'] = (
-            (features_df['created_hour'] >= 9) & 
-            (features_df['created_hour'] <= 17)
-        )
-        
-        # Categorical features
-        features_df['author_is_member'] = (
-            (features_df['author_association'] == 'MEMBER') |
-            (features_df['author_association'] == 'OWNER') |
-            (features_df['author_association'] == 'COLLABORATOR')
-        )
-        
-        # Text features
+
+        # Make a copy to avoid modifying original data
+        data = df.copy()
+
+        # Basic features
+        features = self._extract_basic_features(data)
+
+        # Derived features
+        derived_features = self._extract_derived_features(data)
+        features = pd.concat([features, derived_features], axis=1)
+
+        # Text features (optional)
         if self.config.include_text_features:
-            text_features = self._extract_text_features(features_df)
-            features_df = pd.concat([features_df, text_features], axis=1)
-        
-        # Select final features
-        feature_columns = numerical_features + [
-            'total_changes', 'change_ratio', 'files_per_commit', 'changes_per_file',
-            'is_weekend', 'is_business_hours', 'author_is_member', 'is_draft'
-        ]
-        
-        if self.config.include_text_features and hasattr(self, '_text_feature_names'):
-            feature_columns.extend(self._text_feature_names)
-        
+            text_features = self._extract_text_features(data)
+            if text_features is not None and not text_features.empty:
+                features = pd.concat([features, text_features], axis=1)
+
+        # Handle categorical variables
+        features = self._encode_categorical_features(features)
+
         # Handle missing values
-        features_df = features_df.fillna(0)
-        
-        # Extract target variable (only exists for training data)
-        target = features_df['merge_time_hours'] if 'merge_time_hours' in features_df.columns else None
-        
-        # Select and return features
-        final_features = features_df[feature_columns]
-        
-        logger.info(f"Engineered {len(feature_columns)} features")
-        return final_features, target
-    
-    def _extract_text_features(self, df: pd.DataFrame) -> pd.DataFrame:
-        """
-        Extract features from PR title and body text.
-        
-        Args:
-            df: DataFrame with title and body columns
-            
-        Returns:
-            DataFrame with text features
-        """
-        logger.info("Extracting text features")
-        
+        features = self._handle_missing_values(features)
+
+        # Ensure features is a DataFrame
+        if not isinstance(features, pd.DataFrame):
+            features = pd.DataFrame(features)
+
+        logger.info(f"Engineered {len(features.columns)} features")
+
+        # Extract target variable if requested and available
+        target = None
+        if include_target and 'merge_time_hours' in data.columns:
+            target = data['merge_time_hours'].copy()
+            # Remove outliers (PRs that took more than 30 days)
+            outlier_mask = target <= (30 * 24)  # 30 days in hours
+            features = features[outlier_mask]
+            target = target[outlier_mask]
+            logger.info(f"Removed {(~outlier_mask).sum()} outliers "
+                       f"(PRs taking more than 30 days)")
+
+        return features, target  # type: ignore
+
+    def _extract_basic_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Extract basic features from PR data."""
+        features = pd.DataFrame()
+
+        # Numeric features
+        numeric_columns = [
+            'review_count', 'comment_count', 'commit_count',
+            'files_changed', 'additions', 'deletions'
+        ]
+
+        for col in numeric_columns:
+            if col in df.columns:
+                features[col] = df[col].fillna(0)
+
+        # Time-based features
+        if 'created_hour' in df.columns:
+            features['created_hour'] = df['created_hour']
+
+        if 'created_day' in df.columns:
+            features['created_day'] = df['created_day']
+
+        # Boolean features
+        if 'is_draft' in df.columns:
+            features['is_draft'] = df['is_draft'].astype(int)
+
+        return features
+
+    def _extract_derived_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Extract derived features from PR data."""
+        features = pd.DataFrame()
+
+        # Code change ratios
+        if all(col in df.columns for col in ['additions', 'deletions', 'files_changed']):
+            features['lines_changed'] = df['additions'] + df['deletions']
+            features['addition_ratio'] = df['additions'] / (df['additions'] + df['deletions'] + 1)
+            features['files_per_addition'] = df['files_changed'] / (df['additions'] + 1)
+
+        # Activity ratios
+        if all(col in df.columns for col in ['review_count', 'comment_count', 'commit_count']):
+            features['reviews_per_commit'] = df['review_count'] / (df['commit_count'] + 1)
+            features['comments_per_commit'] = df['comment_count'] / (df['commit_count'] + 1)
+
+        # Time-based derived features
+        if 'created_hour' in df.columns:
+            # Business hours (9 AM to 5 PM)
+            features['is_business_hours'] = ((df['created_hour'] >= 9) &
+                                           (df['created_hour'] <= 17)).astype(int)
+
+        if 'created_day' in df.columns:
+            # Weekend (Saturday=5, Sunday=6)
+            features['is_weekend'] = (df['created_day'].isin([5, 6])).astype(int)
+
+        return features
+
+    def _extract_text_features(self, df: pd.DataFrame) -> Optional[pd.DataFrame]:
+        """Extract text features using TF-IDF."""
+        if 'title' not in df.columns and 'body' not in df.columns:
+            return None
+
         # Combine title and body
-        text_data = (df['title'].fillna('') + ' ' + df['body'].fillna('')).str.lower()
-        
-        # Clean text
-        text_data = text_data.apply(self._clean_text)
-        
-        # Initialize or fit vectorizer
-        if self.text_vectorizer is None:
-            self.text_vectorizer = TfidfVectorizer(
-                max_features=self.config.max_text_features,
-                stop_words='english',
-                ngram_range=(1, 2),
-                min_df=2,
-                max_df=0.8
+        text_data = []
+        for _, row in df.iterrows():
+            title = str(row.get('title', '')) if 'title' in df.columns else ''
+            body = str(row.get('body', '')) if 'body' in df.columns else ''
+            combined_text = f"{title} {body}".strip()
+            text_data.append(combined_text)
+
+        if not any(text_data):  # All empty strings
+            return None
+
+        try:
+            # Initialize TF-IDF vectorizer if not already done
+            if self.tfidf_vectorizer is None:
+                self.tfidf_vectorizer = TfidfVectorizer(
+                    max_features=self.config.max_text_features,
+                    stop_words='english',
+                    lowercase=True,
+                    ngram_range=(1, 2)
+                )
+
+            # Fit and transform text data
+            if not self.is_fitted:
+                tfidf_matrix = self.tfidf_vectorizer.fit_transform(text_data)
+            else:
+                tfidf_matrix = self.tfidf_vectorizer.transform(text_data)
+
+            # Convert to DataFrame
+            feature_names = [f"tfidf_{i}" for i in range(tfidf_matrix.shape[1])]  # type: ignore
+            text_features = pd.DataFrame(
+                tfidf_matrix.toarray(),  # type: ignore
+                columns=feature_names,  # type: ignore
+                index=df.index
             )
-            text_matrix = self.text_vectorizer.fit_transform(text_data)
-        else:
-            text_matrix = self.text_vectorizer.transform(text_data)
-        
-        # Create feature names
-        feature_names = [f'text_{i}' for i in range(text_matrix.shape[1])]
-        self._text_feature_names = feature_names
-        
-        # Convert to DataFrame
-        text_df = pd.DataFrame(
-            text_matrix.toarray(),
-            columns=feature_names,
-            index=df.index
-        )
-        
-        return text_df
-    
-    def _clean_text(self, text: str) -> str:
-        """Clean and preprocess text data."""
-        if not isinstance(text, str):
-            return ''
-        
-        # Remove URLs
-        text = re.sub(r'http\S+|www\S+|https\S+', '', text, flags=re.MULTILINE)
-        
-        # Remove code blocks
-        text = re.sub(r'```.*?```', '', text, flags=re.DOTALL)
-        text = re.sub(r'`.*?`', '', text)
-        
-        # Remove special characters but keep spaces
-        text = re.sub(r'[^a-zA-Z0-9\s]', ' ', text)
-        
-        # Remove extra whitespace
-        text = ' '.join(text.split())
-        
-        return text
-    
-    def scale_features(self, X_train: pd.DataFrame, X_test: pd.DataFrame = None) -> Tuple[pd.DataFrame, pd.DataFrame]:
+
+            return text_features
+
+        except Exception as e:
+            logger.warning(f"Error extracting text features: {e}")
+            return None
+
+    def _encode_categorical_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Encode categorical features."""
+        # For now, we don't have categorical features to encode
+        # This method is here for future extensions
+        return df
+
+    def _handle_missing_values(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Handle missing values in features."""
+        # Fill numeric columns with 0
+        numeric_columns = df.select_dtypes(include=[np.number]).columns
+        df[numeric_columns] = df[numeric_columns].fillna(0)
+
+        return df
+
+    def scale_features(self, X_train: pd.DataFrame,
+                      X_test: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
         """
-        Scale numerical features.
-        
+        Scale features using StandardScaler.
+
         Args:
             X_train: Training features
-            X_test: Test features (optional)
-            
+            X_test: Test features
+
         Returns:
-            Tuple of scaled training and test features
+            Tuple of (scaled_X_train, scaled_X_test)
         """
-        logger.info("Scaling features")
-        
-        # Identify numerical columns (excluding binary features)
-        numerical_cols = [
-            col for col in X_train.columns 
-            if col not in ['is_weekend', 'is_business_hours', 'author_is_member', 'is_draft']
-            and not col.startswith('text_')
-        ]
-        
         # Fit scaler on training data
-        X_train_scaled = X_train.copy()
-        X_train_scaled[numerical_cols] = self.scaler.fit_transform(X_train[numerical_cols])
-        
-        if X_test is not None:
-            X_test_scaled = X_test.copy()
-            X_test_scaled[numerical_cols] = self.scaler.transform(X_test[numerical_cols])
-            return X_train_scaled, X_test_scaled
-        
-        return X_train_scaled, None
-    
-    def create_time_bins(self, target: pd.Series, n_bins: int = 5) -> pd.Series:
-        """
-        Convert continuous target to time bins for classification.
-        
-        Args:
-            target: Continuous merge time target
-            n_bins: Number of bins to create
-            
-        Returns:
-            Binned target labels
-        """
-        # Create bins based on quantiles
-        bin_edges = np.quantile(target, np.linspace(0, 1, n_bins + 1))
-        bin_labels = [f'bin_{i}' for i in range(n_bins)]
-        
-        binned_target = pd.cut(target, bins=bin_edges, labels=bin_labels, include_lowest=True)
-        
-        logger.info(f"Created {n_bins} time bins")
-        return binned_target 
+        X_train_scaled = pd.DataFrame(
+            self.scaler.fit_transform(X_train),
+            columns=X_train.columns,
+            index=X_train.index
+        )
+
+        # Transform test data
+        X_test_scaled = pd.DataFrame(
+            self.scaler.transform(X_test),
+            columns=X_test.columns,
+            index=X_test.index
+        )
+
+        self.is_fitted = True
+        return X_train_scaled, X_test_scaled

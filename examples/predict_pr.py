@@ -46,10 +46,10 @@ def main():
         
         # Load trained model
         print(f"Loading model: {args.model}")
-        predictor.load_trained_model(args.model)
+        predictor.load_model(args.model)
         
         # Get model info
-        model_info = predictor.get_model_info()
+        model_info = predictor.get_model_metrics()
         print(f"Model type: {model_info['model_type']}")
         print(f"Features used: {model_info['feature_count']}")
         print("-" * 50)
@@ -57,7 +57,7 @@ def main():
         # Make prediction
         print(f"Predicting timeline for PR #{args.pr_number} in {args.repo}")
         
-        result = predictor.predict_from_github_pr(args.repo, args.pr_number)
+        result = predictor.predict_pr_timeline(args.repo, args.pr_number)
         
         print(f"\nPR: {result['pr_title']}")
         print(f"Repository: {result['repository']}")

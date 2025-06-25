@@ -1,292 +1,286 @@
 """
-Main predictor interface for PR timeline estimation.
+Prediction module for PR timeline estimation.
 """
 
 import logging
-from typing import Dict, Any, List, Optional, Union
+from typing import Dict, List, Optional
 import pandas as pd
-import numpy as np
-from datetime import datetime
 
 from .config import Config, DEFAULT_CONFIG
 from .data_collector import GitHubDataCollector
 from .model_trainer import ModelTrainer
+from .feature_engineer import FeatureEngineer
 
 logger = logging.getLogger(__name__)
 
+
 class PRTimelinePredictor:
-    """Main interface for predicting PR merge times."""
-    
+    """Main class for predicting PR merge timelines."""
+
     def __init__(self, config: Config = DEFAULT_CONFIG):
         self.config = config
         self.data_collector = GitHubDataCollector(config)
         self.model_trainer = ModelTrainer(config)
+        self.feature_engineer = FeatureEngineer(config)
         self.is_trained = False
-    
-    def train_on_repository(self, repo_name: str, save_model: bool = True, 
-                          model_filename: str = None) -> Dict[str, Any]:
+
+    def train_on_repository(self, repo_name: str,
+                           model_type: Optional[str] = None, limit: Optional[int] = None,
+                           hyperparameter_tuning: bool = False) -> Dict:
         """
-        Train the model on data from a specific repository.
-        
+        Train a model on data from a single repository.
+
         Args:
             repo_name: Repository name in format 'owner/repo'
-            save_model: Whether to save the trained model
-            model_filename: Filename for saving the model
-            
+            model_type: Type of model to train
+            limit: Maximum number of PRs to collect
+            hyperparameter_tuning: Whether to perform hyperparameter tuning
+
         Returns:
-            Dictionary with training results and metrics
+            Dictionary with training metrics
         """
         logger.info(f"Training model on repository: {repo_name}")
-        
+
         # Collect data
-        df = self.data_collector.collect_pr_data(repo_name)
-        
+        df = self.data_collector.collect_pr_data(repo_name, limit)
+
         if len(df) < self.config.min_data_points:
-            raise ValueError(f"Insufficient data: {len(df)} PRs (minimum: {self.config.min_data_points})")
-        
-        # Train model
-        results = self.train_on_data(df, save_model, model_filename)
-        results['repository'] = repo_name
-        results['data_points'] = len(df)
-        
-        return results
-    
-    def train_on_repositories(self, repo_names: List[str], save_model: bool = True,
-                            model_filename: str = None) -> Dict[str, Any]:
-        """
-        Train the model on data from multiple repositories.
-        
-        Args:
-            repo_names: List of repository names in format 'owner/repo'
-            save_model: Whether to save the trained model
-            model_filename: Filename for saving the model
-            
-        Returns:
-            Dictionary with training results and metrics
-        """
-        logger.info(f"Training model on {len(repo_names)} repositories")
-        
-        # Collect data from all repositories
-        df = self.data_collector.collect_multiple_repos(repo_names)
-        
-        if len(df) < self.config.min_data_points:
-            raise ValueError(f"Insufficient data: {len(df)} PRs (minimum: {self.config.min_data_points})")
-        
-        # Train model
-        results = self.train_on_data(df, save_model, model_filename)
-        results['repositories'] = repo_names
-        results['data_points'] = len(df)
-        
-        return results
-    
-    def train_on_data(self, df: pd.DataFrame, save_model: bool = True,
-                     model_filename: str = None) -> Dict[str, Any]:
-        """
-        Train the model on provided data.
-        
-        Args:
-            df: DataFrame with PR data
-            save_model: Whether to save the trained model
-            model_filename: Filename for saving the model
-            
-        Returns:
-            Dictionary with training results and metrics
-        """
-        logger.info("Training model on provided data")
-        
+            raise ValueError(f"Insufficient data: {len(df)} PRs found, "
+                           f"minimum {self.config.min_data_points} required")
+
         # Prepare data
         X_train, X_test, y_train, y_test = self.model_trainer.prepare_data(df)
-        
+
         # Train model
-        self.model_trainer.train_model(X_train, y_train)
-        
+        self.model_trainer.train_model(
+            X_train, y_train,
+            model_type=model_type,
+            hyperparameter_tuning=hyperparameter_tuning
+        )
+
         # Evaluate model
         metrics = self.model_trainer.evaluate_model(X_test, y_test)
-        
-        # Get feature importance
-        feature_importance = self.model_trainer.get_feature_importance()
-        
-        # Cross-validation
-        cv_metrics = self.model_trainer.cross_validate(
-            pd.concat([X_train, X_test]), 
-            pd.concat([y_train, y_test])
-        )
-        
-        # Save model if requested
-        if save_model:
-            filename = model_filename or f"pr_timeline_model_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pkl"
-            self.model_trainer.save_model(filename)
-        
         self.is_trained = True
-        
+
+        # Return comprehensive results
         results = {
-            'metrics': metrics,
-            'cv_metrics': cv_metrics,
-            'feature_importance': feature_importance.to_dict('records'),
+            'data_points': len(df),
             'training_size': len(X_train),
-            'test_size': len(X_test)
+            'test_size': len(X_test),
+            'metrics': metrics,
+            'mae': metrics['mae'],
+            'rmse': metrics['rmse'],
+            'r2': metrics['r2'],
+            'mape': metrics['mape'],
+            'feature_importance': self.get_feature_importance(20).to_dict('records')
         }
-        
+
+        logger.info(f"Model training completed. MAE: {metrics['mae']:.2f} hours")
         return results
-    
-    def load_trained_model(self, model_filename: str) -> None:
+
+    def train_on_repositories(self, repo_names: List[str],
+                             model_type: Optional[str] = None, limit_per_repo: Optional[int] = None,
+                             hyperparameter_tuning: bool = False) -> Dict:
         """
-        Load a pre-trained model.
-        
+        Train a model on data from multiple repositories.
+
         Args:
-            model_filename: Filename of the saved model
-        """
-        self.model_trainer.load_model(model_filename)
-        self.is_trained = True
-        logger.info(f"Loaded trained model: {model_filename}")
-    
-    def predict_pr_timeline(self, pr_data: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Predict merge timeline for a single PR.
-        
-        Args:
-            pr_data: Dictionary with PR features
-            
+            repo_names: List of repository names
+            model_type: Type of model to train
+            limit_per_repo: Maximum number of PRs to collect per repository
+            hyperparameter_tuning: Whether to perform hyperparameter tuning
+
         Returns:
-            Dictionary with prediction results
+            Dictionary with training metrics
         """
-        if not self.is_trained:
-            raise ValueError("Model must be trained or loaded before making predictions")
-        
-        # Convert to DataFrame
-        df = pd.DataFrame([pr_data])
-        
-        # Engineer features
-        X, _ = self.model_trainer.feature_engineer.engineer_features(df)
-        
-        # Scale features
-        X_scaled, _ = self.model_trainer.feature_engineer.scale_features(X)
-        
-        # Make prediction
-        prediction_hours = self.model_trainer.model.predict(X_scaled)[0]
-        
-        # Convert to more interpretable formats
-        prediction_days = prediction_hours / 24
-        
-        # Calculate confidence intervals (rough estimate)
-        # This is a simplified approach - in production, you might want to use more sophisticated methods
-        std_error = np.std(self.model_trainer.model_metrics.get('cv_scores', [0])) if hasattr(self, 'cv_scores') else prediction_hours * 0.2
-        
-        result = {
-            'predicted_hours': round(prediction_hours, 2),
-            'predicted_days': round(prediction_days, 2),
-            'confidence_interval_hours': {
-                'lower': round(max(0, prediction_hours - 1.96 * std_error), 2),
-                'upper': round(prediction_hours + 1.96 * std_error, 2)
-            },
-            'time_category': self._categorize_time(prediction_hours)
-        }
-        
-        return result
-    
-    def predict_from_github_pr(self, repo_name: str, pr_number: int) -> Dict[str, Any]:
+        logger.info(f"Training model on {len(repo_names)} repositories")
+
+        # Collect data from multiple repositories
+        df = self.data_collector.collect_multiple_repos(repo_names, limit_per_repo)
+
+        if len(df) < self.config.min_data_points:
+            raise ValueError(f"Insufficient data: {len(df)} PRs found, "
+                           f"minimum {self.config.min_data_points} required")
+
+        # Prepare data
+        X_train, X_test, y_train, y_test = self.model_trainer.prepare_data(df)
+
+        # Train model
+        self.model_trainer.train_model(
+            X_train, y_train,
+            model_type=model_type,
+            hyperparameter_tuning=hyperparameter_tuning
+        )
+
+        # Evaluate model
+        metrics = self.model_trainer.evaluate_model(X_test, y_test)
+        self.is_trained = True
+
+        logger.info(f"Model training completed. MAE: {metrics['mae']:.2f} hours")
+        return metrics
+
+    def predict_pr_timeline(self, repo_name: str, pr_number: int) -> Dict:
         """
-        Predict merge timeline for a PR directly from GitHub.
-        
+        Predict timeline for a specific PR.
+
         Args:
             repo_name: Repository name in format 'owner/repo'
             pr_number: PR number
-            
+
         Returns:
             Dictionary with prediction results
         """
         if not self.is_trained:
-            raise ValueError("Model must be trained or loaded before making predictions")
-        
-        # Get PR data from GitHub
-        repo = self.data_collector.github.get_repo(repo_name)
-        pr = repo.get_pull(pr_number)
-        
-        # Extract features
-        pr_data = self.data_collector._extract_pr_features(pr)
-        
-        # Remove target variable if present
-        if 'merge_time_hours' in pr_data:
-            del pr_data['merge_time_hours']
-        
+            raise ValueError("Model must be trained before making predictions")
+
+        logger.info(f"Predicting timeline for PR #{pr_number} in {repo_name}")
+
+        # Get PR data
+        pr_data = self._get_pr_data(repo_name, pr_number)
+
         # Make prediction
-        result = self.predict_pr_timeline(pr_data)
-        result['pr_number'] = pr_number
-        result['repository'] = repo_name
-        result['pr_title'] = pr.title
-        
-        return result
-    
-    def _categorize_time(self, hours: float) -> str:
-        """Categorize prediction into time buckets."""
-        if hours < 2:
-            return "Very Fast (< 2 hours)"
-        elif hours < 24:
-            return "Fast (< 1 day)"
-        elif hours < 72:
-            return "Medium (1-3 days)"
-        elif hours < 168:  # 1 week
-            return "Slow (3-7 days)"
-        else:
-            return "Very Slow (> 1 week)"
-    
-    def get_model_info(self) -> Dict[str, Any]:
-        """Get information about the current model."""
-        if not self.is_trained:
-            return {"status": "not_trained", "message": "No model has been trained or loaded"}
-        
-        info = {
-            "status": "trained",
-            "model_type": self.config.model_type,
-            "metrics": self.model_trainer.model_metrics,
-            "feature_count": len(self.model_trainer.feature_names) if self.model_trainer.feature_names else 0
-        }
-        
-        return info
-    
-    def benchmark_predictions(self, test_data: pd.DataFrame) -> Dict[str, Any]:
+        prediction = self._predict_single_pr(pr_data)
+
+        return prediction
+
+    def predict_batch(self, pr_data_list: List[Dict]) -> List[Dict]:
         """
-        Benchmark the model against test data.
-        
+        Predict timelines for multiple PRs.
+
         Args:
-            test_data: DataFrame with test PR data including actual merge times
-            
+            pr_data_list: List of PR data dictionaries
+
         Returns:
-            Dictionary with benchmark results
+            List of prediction results
         """
         if not self.is_trained:
-            raise ValueError("Model must be trained or loaded before benchmarking")
-        
+            raise ValueError("Model must be trained before making predictions")
+
+        logger.info(f"Making batch predictions for {len(pr_data_list)} PRs")
+
         predictions = []
-        actuals = []
-        
-        for _, row in test_data.iterrows():
-            actual_time = row['merge_time_hours']
-            pr_data = row.drop('merge_time_hours').to_dict()
-            
+        for pr_data in pr_data_list:
             try:
-                pred_result = self.predict_pr_timeline(pr_data)
-                predictions.append(pred_result['predicted_hours'])
-                actuals.append(actual_time)
+                prediction = self._predict_single_pr(pr_data)
+                predictions.append(prediction)
             except Exception as e:
-                logger.warning(f"Error predicting for PR: {e}")
-                continue
-        
-        if not predictions:
-            return {"error": "No successful predictions made"}
-        
-        # Calculate benchmark metrics
-        mae = np.mean(np.abs(np.array(predictions) - np.array(actuals)))
-        mse = np.mean((np.array(predictions) - np.array(actuals)) ** 2)
-        rmse = np.sqrt(mse)
-        
-        benchmark_results = {
-            "sample_size": len(predictions),
-            "mae": round(mae, 2),
-            "mse": round(mse, 2),
-            "rmse": round(rmse, 2),
-            "predictions": predictions[:10],  # First 10 predictions
-            "actuals": actuals[:10]  # First 10 actual values
-        }
-        
-        return benchmark_results 
+                logger.error(f"Error predicting PR {pr_data.get('pr_number', 'unknown')}: {e}")
+                predictions.append({
+                    'pr_number': pr_data.get('pr_number'),
+                    'error': str(e),
+                    'predicted_hours': None,
+                    'predicted_days': None
+                })
+
+        return predictions
+
+    def _get_pr_data(self, repo_name: str, pr_number: int) -> Dict:
+        """Get data for a specific PR."""
+        try:
+            repo = self.data_collector.github.get_repo(repo_name)
+            pr = repo.get_pull(pr_number)
+
+            # Extract features similar to data collection
+            pr_data = self.data_collector._extract_pr_features(pr)
+
+            return pr_data
+
+        except Exception as e:
+            logger.error(f"Error fetching PR data: {e}")
+            raise
+
+    def _predict_single_pr(self, pr_data: Dict) -> Dict:
+        """Make prediction for a single PR."""
+        try:
+            # Convert to DataFrame
+            df = pd.DataFrame([pr_data])
+
+            # Engineer features (without target)
+            features, _ = self.feature_engineer.engineer_features(df, include_target=False)
+
+            # Handle case where we have a trained model but need to ensure feature compatibility
+            if hasattr(self.model_trainer, 'feature_names') and self.model_trainer.feature_names:
+                # Ensure all required features are present
+                for feature_name in self.model_trainer.feature_names:
+                    if feature_name not in features.columns:
+                        features[feature_name] = 0
+
+                # Select only the features the model was trained on
+                features = features[self.model_trainer.feature_names]
+
+            # Scale features (using the same scaler used during training)
+            if hasattr(self.feature_engineer, 'scaler') and self.feature_engineer.is_fitted:
+                features_scaled = pd.DataFrame(
+                    self.feature_engineer.scaler.transform(features),
+                    columns=features.columns
+                )
+            else:
+                features_scaled = features
+
+            # Make prediction
+            predicted_hours = self.model_trainer.model.predict(features_scaled)[0]  # type: ignore
+            predicted_days = predicted_hours / 24  # type: ignore
+
+            result = {
+                'pr_number': pr_data.get('pr_number'),
+                'repository': pr_data.get('repository'),
+                'predicted_hours': float(predicted_hours),  # type: ignore
+                'predicted_days': float(predicted_days),  # type: ignore
+                'prediction_confidence': self._calculate_confidence(features_scaled)  # type: ignore
+            }
+
+            logger.info(f"Predicted {predicted_hours:.1f} hours "
+                       f"({predicted_days:.1f} days) for PR #{pr_data.get('pr_number')}")
+
+            return result
+
+        except Exception as e:
+            logger.error(f"Error making prediction: {e}")
+            raise
+
+    def _calculate_confidence(self, features: pd.DataFrame) -> str:
+        """Calculate prediction confidence based on feature values."""
+        # Simple confidence calculation based on feature completeness
+        non_zero_features = (features != 0).sum().sum()
+        total_features = features.size
+
+        if total_features == 0:
+            return "low"
+
+        completeness_ratio = non_zero_features / total_features
+
+        if completeness_ratio > 0.7:
+            return "high"
+        elif completeness_ratio > 0.4:
+            return "medium"
+        else:
+            return "low"
+
+    def get_feature_importance(self, top_k: int = 10) -> pd.DataFrame:
+        """Get feature importance from the trained model."""
+        if not self.is_trained:
+            raise ValueError("Model must be trained before getting feature importance")
+
+        return self.model_trainer.get_feature_importance(top_k)
+
+    def save_model(self, filename: str) -> None:
+        """Save the trained model."""
+        if not self.is_trained:
+            raise ValueError("No trained model to save")
+
+        self.model_trainer.save_model(filename)
+        logger.info(f"Model saved as {filename}")
+
+    def load_model(self, filename: str) -> None:
+        """Load a pre-trained model."""
+        self.model_trainer.load_model(filename)
+        self.feature_engineer = self.model_trainer.feature_engineer
+        self.is_trained = True
+        logger.info(f"Model loaded from {filename}")
+
+    def get_model_metrics(self) -> Dict:
+        """Get metrics from the trained model."""
+        if not self.is_trained:
+            raise ValueError("Model must be trained before getting metrics")
+
+        return self.model_trainer.model_metrics

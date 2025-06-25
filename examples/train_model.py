@@ -59,8 +59,14 @@ def main():
         # Train the model
         results = predictor.train_on_repository(
             args.repo,
-            save_model=True
+            model_type=args.model_type,
+            limit=args.max_prs,
+            hyperparameter_tuning=args.tune_hyperparams
         )
+        
+        # Save the trained model
+        model_filename = f"{args.repo.replace('/', '_')}_{args.model_type}_model.pkl"
+        predictor.save_model(model_filename)
         
         print("\nTraining completed!")
         print(f"Data points used: {results['data_points']}")
@@ -73,10 +79,6 @@ def main():
         print(f"  RMSE (Root Mean Squared Error): {metrics['rmse']:.2f} hours")
         print(f"  R² Score: {metrics['r2']:.3f}")
         print(f"  MAPE (Mean Absolute Percentage Error): {metrics['mape']:.1f}%")
-        
-        print("\nCross-Validation Results:")
-        cv_metrics = results['cv_metrics']
-        print(f"  CV MAE: {cv_metrics['cv_mae_mean']:.2f} ± {cv_metrics['cv_mae_std']:.2f} hours")
         
         print("\nTop 10 Most Important Features:")
         for i, feature in enumerate(results['feature_importance'][:10], 1):

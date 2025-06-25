@@ -65,7 +65,7 @@ def main():
         
         # Load trained model
         print(f"Loading model: {args.model}")
-        predictor.load_trained_model(args.model)
+        predictor.load_model(args.model)
         
         # Prepare output file
         with open(args.output, 'w', newline='') as csvfile:
@@ -99,7 +99,7 @@ def main():
                                 del pr_data['merge_time_hours']
                             
                             # Make prediction
-                            result = predictor.predict_pr_timeline(pr_data)
+                            result = predictor.predict_pr_timeline(repo_name, pr.number)
                             
                             # Prepare row data
                             row = {

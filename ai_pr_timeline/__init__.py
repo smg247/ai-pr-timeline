@@ -1,16 +1,19 @@
 """
-AI PR Timeline Prediction Plugin
+AI PR Timeline - A plugin to predict PR merge times using machine learning.
 
-A Python plugin for predicting pull request merge times using machine learning
-and historical GitHub data.
+This package provides tools to:
+- Collect PR data from GitHub repositories
+- Engineer features from PR metadata
+- Train machine learning models
+- Predict merge times for new PRs
 """
+
+from .config import Config
+from .data_collector import GitHubDataCollector
+from .model_trainer import ModelTrainer
+from .predictor import PRTimelinePredictor
 
 __version__ = "0.1.0"
 __author__ = "AI PR Timeline Team"
 
-from .predictor import PRTimelinePredictor
-from .data_collector import GitHubDataCollector
-from .model_trainer import ModelTrainer
-from .config import Config
-
-__all__ = ["PRTimelinePredictor", "GitHubDataCollector", "ModelTrainer", "Config"] 
+__all__ = ["PRTimelinePredictor", "GitHubDataCollector", "ModelTrainer", "Config"]

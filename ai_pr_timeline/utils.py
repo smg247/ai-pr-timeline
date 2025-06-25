@@ -2,95 +2,102 @@
 Utility functions for the AI PR Timeline plugin.
 """
 
-import logging
+import os
 import json
-from datetime import datetime, timedelta
+import logging
 from typing import Dict, Any, List, Optional
+from datetime import datetime, timedelta
 import pandas as pd
+import numpy as np
 
-logger = logging.getLogger(__name__)
 
-def setup_logging(level: str = "INFO", log_file: Optional[str] = None) -> None:
+def setup_logging(level: str = "INFO") -> None:
     """
     Set up logging configuration.
-    
+
     Args:
         level: Logging level (DEBUG, INFO, WARNING, ERROR)
-        log_file: Optional log file path
     """
-    log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-    
-    handlers = [logging.StreamHandler()]
-    if log_file:
-        handlers.append(logging.FileHandler(log_file))
-    
     logging.basicConfig(
         level=getattr(logging, level.upper()),
-        format=log_format,
-        handlers=handlers
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        datefmt='%Y-%m-%d %H:%M:%S'
     )
 
-def save_results_to_json(results: Dict[str, Any], filename: str) -> None:
-    """
-    Save results dictionary to JSON file.
-    
-    Args:
-        results: Results dictionary
-        filename: Output filename
-    """
-    # Convert numpy types to native Python types for JSON serialization
-    def convert_types(obj):
-        if hasattr(obj, 'tolist'):
-            return obj.tolist()
-        elif hasattr(obj, 'item'):
-            return obj.item()
-        elif isinstance(obj, pd.Timestamp):
-            return obj.isoformat()
-        elif isinstance(obj, datetime):
-            return obj.isoformat()
-        return obj
-    
-    # Recursively convert types
-    def clean_dict(d):
-        if isinstance(d, dict):
-            return {k: clean_dict(v) for k, v in d.items()}
-        elif isinstance(d, list):
-            return [clean_dict(item) for item in d]
-        else:
-            return convert_types(d)
-    
-    cleaned_results = clean_dict(results)
-    
-    with open(filename, 'w') as f:
-        json.dump(cleaned_results, f, indent=2, default=str)
-    
-    logger.info(f"Results saved to {filename}")
 
-def load_results_from_json(filename: str) -> Dict[str, Any]:
+def validate_config(config: Dict[str, Any]) -> bool:
     """
-    Load results dictionary from JSON file.
-    
+    Validate configuration parameters.
+
     Args:
-        filename: Input filename
-        
+        config: Configuration dictionary
+
     Returns:
-        Results dictionary
+        True if valid, raises ValueError if invalid
     """
-    with open(filename, 'r') as f:
-        results = json.load(f)
-    
-    logger.info(f"Results loaded from {filename}")
-    return results
+    required_fields = ['github_token', 'model_type']
+
+    for field in required_fields:
+        if field not in config or config[field] is None:
+            raise ValueError(f"Missing required configuration field: {field}")
+
+    valid_model_types = ['random_forest', 'xgboost', 'lightgbm']
+    if config['model_type'] not in valid_model_types:
+        raise ValueError(f"Invalid model_type. Must be one of: {valid_model_types}")
+
+    if 'test_size' in config:
+        if not 0 < config['test_size'] < 1:
+            raise ValueError("test_size must be between 0 and 1")
+
+    return True
+
+
+def create_directories(paths: List[str]) -> None:
+    """
+    Create directories if they don't exist.
+
+    Args:
+        paths: List of directory paths to create
+    """
+    for path in paths:
+        os.makedirs(path, exist_ok=True)
+
+
+def save_json(data: Dict[str, Any], filepath: str) -> None:
+    """
+    Save data to JSON file.
+
+    Args:
+        data: Dictionary to save
+        filepath: Path to save file
+    """
+    with open(filepath, 'w') as f:
+        json.dump(data, f, indent=2, default=str)
+
+
+def load_json(filepath: str) -> Dict[str, Any]:
+    """
+    Load data from JSON file.
+
+    Args:
+        filepath: Path to JSON file
+
+    Returns:
+        Dictionary with loaded data
+    """
+    with open(filepath, 'r') as f:
+        return json.load(f)
+
 
 def format_duration(hours: float) -> str:
     """
     Format duration in hours to human-readable string.
-    
+
     Args:
         hours: Duration in hours
-        
+
     Returns:
-        Formatted string
+        Formatted duration string
     """
     if hours < 1:
         minutes = int(hours * 60)
@@ -99,156 +106,203 @@ def format_duration(hours: float) -> str:
         return f"{hours:.1f} hours"
     else:
         days = hours / 24
-        if days < 7:
-            return f"{days:.1f} days"
-        else:
-            weeks = days / 7
-            return f"{weeks:.1f} weeks"
+        return f"{days:.1f} days"
 
-def calculate_business_hours(start_time: datetime, end_time: datetime) -> float:
+
+def calculate_percentiles(data: List[float], percentiles: Optional[List[int]] = None) -> Dict[str, float]:
+    """
+    Calculate percentiles for a list of values.
+
+    Args:
+        data: List of numeric values
+        percentiles: List of percentile values to calculate (default: [25, 50, 75, 90, 95])
+
+    Returns:
+        Dictionary with percentile values
+    """
+    if percentiles is None:
+        percentiles = [25, 50, 75, 90, 95]
+
+    if not data:
+        return {f"p{p}": 0.0 for p in percentiles}
+
+    result = {}
+    for p in percentiles:
+        result[f"p{p}"] = np.percentile(data, p)
+
+    return result
+
+
+def filter_outliers(data: pd.Series, method: str = 'iqr', factor: float = 1.5) -> pd.Series:
+    """
+    Filter outliers from data series.
+
+    Args:
+        data: Pandas Series with numeric data
+        method: Method to use ('iqr' or 'zscore')
+        factor: Factor for outlier detection
+
+    Returns:
+        Filtered Series without outliers
+    """
+    if method == 'iqr':
+        Q1 = data.quantile(0.25)
+        Q3 = data.quantile(0.75)
+        IQR = Q3 - Q1
+        lower_bound = Q1 - factor * IQR
+        upper_bound = Q3 + factor * IQR
+        return data[(data >= lower_bound) & (data <= upper_bound)]  # type: ignore
+    elif method == 'zscore':
+        z_scores = np.abs((data - data.mean()) / data.std())
+        return data[z_scores < factor]  # type: ignore
+    else:
+        raise ValueError("Method must be 'iqr' or 'zscore'")
+
+
+def get_business_hours_only(timestamp: datetime) -> bool:
+    """
+    Check if timestamp falls within business hours (9 AM - 5 PM, Monday-Friday).
+
+    Args:
+        timestamp: Datetime object to check
+
+    Returns:
+        True if within business hours, False otherwise
+    """
+    # Monday = 0, Sunday = 6
+    if timestamp.weekday() >= 5:  # Weekend
+        return False
+
+    hour = timestamp.hour
+    return 9 <= hour <= 17
+
+
+def calculate_business_hours_between(start: datetime, end: datetime) -> float:
     """
     Calculate business hours between two timestamps.
-    Assumes business hours are 9 AM - 5 PM, Monday - Friday.
-    
+
     Args:
-        start_time: Start timestamp
-        end_time: End timestamp
-        
+        start: Start timestamp
+        end: End timestamp
+
     Returns:
-        Business hours as float
+        Number of business hours between timestamps
     """
+    if start >= end:
+        return 0.0
+
     business_hours = 0.0
-    current_time = start_time
-    
-    while current_time < end_time:
-        # Check if current day is a weekday
-        if current_time.weekday() < 5:  # Monday = 0, Friday = 4
-            # Get start and end of business day
-            business_start = current_time.replace(hour=9, minute=0, second=0, microsecond=0)
-            business_end = current_time.replace(hour=17, minute=0, second=0, microsecond=0)
-            
-            # Calculate overlap with our time range
-            overlap_start = max(current_time, business_start)
-            overlap_end = min(end_time, business_end)
-            
-            if overlap_start < overlap_end:
-                business_hours += (overlap_end - overlap_start).total_seconds() / 3600
-        
-        # Move to next day
-        current_time = (current_time + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-    
+    current = start
+
+    while current < end:
+        # Check if current time is in business hours
+        if get_business_hours_only(current):
+            # Calculate hours until end of business day or end time
+            end_of_business = current.replace(hour=17, minute=0, second=0, microsecond=0)
+            if end_of_business > end:
+                end_of_business = end
+
+            # Add business hours for this period
+            if current < end_of_business:
+                hours_diff = (end_of_business - current).total_seconds() / 3600
+                business_hours += hours_diff
+
+        # Move to next business day start
+        next_day = current.replace(hour=9, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        while next_day.weekday() >= 5:  # Skip weekends
+            next_day += timedelta(days=1)
+
+        current = next_day
+
     return business_hours
 
-def get_pr_size_category(additions: int, deletions: int) -> str:
-    """
-    Categorize PR size based on lines changed.
-    
-    Args:
-        additions: Number of lines added
-        deletions: Number of lines deleted
-        
-    Returns:
-        Size category string
-    """
-    total_changes = additions + deletions
-    
-    if total_changes <= 10:
-        return "XS"
-    elif total_changes <= 50:
-        return "S"
-    elif total_changes <= 200:
-        return "M"
-    elif total_changes <= 500:
-        return "L"
-    else:
-        return "XL"
 
-def validate_pr_data(pr_data: Dict[str, Any]) -> List[str]:
+def validate_pr_data(pr_data: Dict[str, Any]) -> bool:
     """
-    Validate PR data dictionary for required fields.
-    
+    Validate PR data dictionary.
+
     Args:
         pr_data: PR data dictionary
-        
+
     Returns:
-        List of validation errors (empty if valid)
+        True if valid, raises ValueError if invalid
     """
-    required_fields = [
-        'title', 'body', 'review_count', 'comment_count', 'commit_count',
-        'files_changed', 'additions', 'deletions', 'created_hour', 'created_day',
-        'author_association', 'is_draft'
-    ]
-    
-    errors = []
-    
+    required_fields = ['pr_number', 'title', 'review_count', 'files_changed']
+
     for field in required_fields:
         if field not in pr_data:
-            errors.append(f"Missing required field: {field}")
-        elif pr_data[field] is None:
-            errors.append(f"Field cannot be None: {field}")
-    
-    # Validate data types
-    if 'review_count' in pr_data and not isinstance(pr_data['review_count'], (int, float)):
-        errors.append("review_count must be numeric")
-    
-    if 'created_hour' in pr_data and not (0 <= pr_data['created_hour'] <= 23):
-        errors.append("created_hour must be between 0 and 23")
-    
-    if 'created_day' in pr_data and not (0 <= pr_data['created_day'] <= 6):
-        errors.append("created_day must be between 0 and 6")
-    
-    return errors
+            raise ValueError(f"Missing required PR data field: {field}")
 
-def create_pr_summary_stats(df: pd.DataFrame) -> Dict[str, Any]:
+    # Validate numeric fields
+    numeric_fields = ['review_count', 'comment_count', 'commit_count',
+                     'files_changed', 'additions', 'deletions']
+
+    for field in numeric_fields:
+        if field in pr_data:
+            value = pr_data[field]
+            if not isinstance(value, (int, float)) or value < 0:
+                raise ValueError(f"Field {field} must be a non-negative number")
+
+    return True
+
+
+def aggregate_repository_stats(pr_data_list: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
-    Create summary statistics for PR data.
-    
+    Aggregate statistics from multiple PR data entries.
+
     Args:
-        df: DataFrame with PR data
-        
+        pr_data_list: List of PR data dictionaries
+
     Returns:
-        Dictionary with summary statistics
+        Dictionary with aggregated statistics
     """
-    if df.empty:
-        return {"error": "No data provided"}
-    
-    stats = {
-        "total_prs": len(df),
-        "merge_time_stats": {
-            "mean_hours": df['merge_time_hours'].mean(),
-            "median_hours": df['merge_time_hours'].median(),
-            "std_hours": df['merge_time_hours'].std(),
-            "min_hours": df['merge_time_hours'].min(),
-            "max_hours": df['merge_time_hours'].max(),
-            "percentiles": {
-                "25th": df['merge_time_hours'].quantile(0.25),
-                "75th": df['merge_time_hours'].quantile(0.75),
-                "90th": df['merge_time_hours'].quantile(0.90),
-                "95th": df['merge_time_hours'].quantile(0.95)
+    if not pr_data_list:
+        return {}
+
+    # Extract numeric fields
+    numeric_fields = ['review_count', 'comment_count', 'commit_count',
+                     'files_changed', 'additions', 'deletions']
+
+    stats = {}
+
+    for field in numeric_fields:
+        values = [pr.get(field, 0) for pr in pr_data_list if pr.get(field) is not None]
+        if values:
+            stats[field] = {
+                'mean': np.mean(values),
+                'median': np.median(values),
+                'std': np.std(values),
+                'min': np.min(values),
+                'max': np.max(values)
             }
-        },
-        "size_distribution": {
-            "mean_files_changed": df['files_changed'].mean(),
-            "mean_additions": df['additions'].mean(),
-            "mean_deletions": df['deletions'].mean(),
-            "mean_total_changes": (df['additions'] + df['deletions']).mean()
-        },
-        "activity_stats": {
-            "mean_reviews": df['review_count'].mean(),
-            "mean_comments": df['comment_count'].mean(),
-            "mean_commits": df['commit_count'].mean()
-        },
-        "timing_patterns": {
-            "weekend_prs": len(df[df['created_day'].isin([5, 6])]),
-            "business_hours_prs": len(df[(df['created_hour'] >= 9) & (df['created_hour'] <= 17)]),
-            "draft_prs": len(df[df['is_draft'] == True])
+
+    # Calculate merge time stats if available
+    merge_times = [pr.get('merge_time_hours') for pr in pr_data_list
+                  if pr.get('merge_time_hours') is not None]
+
+    if merge_times:
+        stats['merge_time_hours'] = {
+            'mean': np.mean(merge_times),  # type: ignore
+            'median': np.median(merge_times),  # type: ignore
+            'std': np.std(merge_times),  # type: ignore
+            'min': np.min(merge_times),  # type: ignore
+            'max': np.max(merge_times),  # type: ignore
+            'percentiles': calculate_percentiles(merge_times)  # type: ignore
         }
-    }
-    
-    # Add percentages
-    total = len(df)
-    stats["timing_patterns"]["weekend_percentage"] = (stats["timing_patterns"]["weekend_prs"] / total) * 100
-    stats["timing_patterns"]["business_hours_percentage"] = (stats["timing_patterns"]["business_hours_prs"] / total) * 100
-    stats["timing_patterns"]["draft_percentage"] = (stats["timing_patterns"]["draft_prs"] / total) * 100
-    
-    return stats 
+
+    # Repository-level stats
+    stats['total_prs'] = len(pr_data_list)
+    repositories = set(pr.get('repository') for pr in pr_data_list if pr.get('repository'))
+    stats['unique_repositories'] = len(repositories)
+
+    # Time-based analysis
+    weekend_prs = sum(1 for pr in pr_data_list if pr.get('created_day') in [5, 6])
+    stats['weekend_prs_ratio'] = weekend_prs / len(pr_data_list) if pr_data_list else 0
+
+    business_hour_prs = sum(1 for pr in pr_data_list
+                           if pr.get('created_hour') is not None and
+                           9 <= pr.get('created_hour', 0) <= 17)
+    stats['business_hours_prs_ratio'] = (business_hour_prs / len(pr_data_list)
+                                        if pr_data_list else 0)
+
+    return stats
