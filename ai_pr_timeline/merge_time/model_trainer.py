@@ -13,7 +13,7 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 import xgboost as xgb
 import lightgbm as lgb
 
-from .config import Config, DEFAULT_CONFIG
+from ..config import Config, DEFAULT_CONFIG
 from .feature_engineer import FeatureEngineer
 
 logger = logging.getLogger(__name__)

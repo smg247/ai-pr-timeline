@@ -6,8 +6,8 @@ import logging
 from typing import Dict, List, Optional
 import pandas as pd
 
-from .config import Config, DEFAULT_CONFIG
-from .data_collector import GitHubDataCollector
+from ..config import Config, DEFAULT_CONFIG
+from ..data_collection import GitHubDataCollector
 from .model_trainer import ModelTrainer
 from .feature_engineer import FeatureEngineer
 
@@ -44,7 +44,8 @@ class PRTimelinePredictor:
         logger.info(f"Training model on repository: {repo_name}")
 
         # Collect data
-        df = self.data_collector.collect_pr_data(repo_name, limit, max_new_prs)
+        df, _ = self.data_collector.collect_all_data(repo_name, limit, max_new_prs, 
+                                                    collect_pr_data=True, collect_ci_data=False)
 
         if len(df) < self.config.min_data_points:
             raise ValueError(f"Insufficient data: {len(df)} PRs found, "
@@ -100,7 +101,8 @@ class PRTimelinePredictor:
         logger.info(f"Training model on {len(repo_names)} repositories")
 
         # Collect data from multiple repositories
-        df = self.data_collector.collect_multiple_repos(repo_names, limit_per_repo, max_new_prs_per_repo)
+        df, _ = self.data_collector.collect_multiple_repos(repo_names, limit_per_repo, max_new_prs_per_repo,
+                                                          collect_pr_data=True, collect_ci_data=False)
 
         if len(df) < self.config.min_data_points:
             raise ValueError(f"Insufficient data: {len(df)} PRs found, "

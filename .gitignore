@@ -198,3 +198,4 @@ cython_debug/
 cache/
 models/
 training_cache/
+pre-ci-training-cache/

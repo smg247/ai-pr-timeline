@@ -29,6 +29,16 @@ class Config:
     max_prs_per_repo: int = 1000
     min_data_points: int = 50
 
+    # CI-specific settings
+    ci_model_type: str = "random_forest"  # Options: random_forest, xgboost, lightgbm
+    ci_test_size: float = 0.2
+    ci_min_data_points: int = 50
+    max_ci_runs_per_pr: int = 100  # Maximum CI runs to analyze per PR
+    ci_success_threshold: float = 0.95  # Success rate threshold for CI reliability
+    include_ci_text_features: bool = True
+    max_ci_text_features: int = 30
+    ci_text_feature_weight: float = 0.2
+
     # File paths
     data_dir: str = "data"
     model_dir: str = "models"

@@ -9,7 +9,7 @@ import numpy as np
 from sklearn.preprocessing import StandardScaler
 from sklearn.feature_extraction.text import TfidfVectorizer
 
-from .config import Config, DEFAULT_CONFIG
+from ..config import Config, DEFAULT_CONFIG
 
 logger = logging.getLogger(__name__)
 

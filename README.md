@@ -86,14 +86,17 @@ python commands/batch_predict.py \
 
 ## Core Components
 
-### Data Collection (`GitHubDataCollector`)
+### Enhanced Data Collection (`GitHubDataCollector`)
 
-Efficiently collects PR data with:
-- **Training Cache**: Stores processed PR data to reduce API calls
+Efficiently collects both PR and CI data with:
+- **Single API Pass**: Collects both PR and CI data in one efficient pass
+- **Selective Collection**: Choose to collect PR data, CI data, or both
+- **Training Cache**: Stores processed data to reduce API calls
 - **Bot Detection**: Automatically filters out bot-authored PRs
 - **Draft Time Calculation**: Excludes draft periods from merge time calculations
 - **API Call Tracking**: Monitors and logs all GitHub API interactions
 - **Rate Limit Handling**: Automatically handles GitHub API rate limits
+- **Backward Compatibility**: Drop-in replacement for old collectors
 
 ### Feature Engineering (`FeatureEngineer`)
 
@@ -275,13 +278,20 @@ Performance varies significantly based on:
 ai-pr-timeline/
 ├── ai_pr_timeline/           # Main package
 │   ├── __init__.py
-│   ├── config.py            # Configuration settings
-│   ├── data_collector.py    # GitHub data collection
-│   ├── feature_engineer.py  # Feature extraction and processing
-│   ├── model_trainer.py     # ML model training and evaluation
-│   ├── predictor.py         # Main prediction interface
-│   ├── training_cache.py    # Cache management system
-│   └── utils.py             # Utility functions
+│   ├── config.py                    # Configuration settings
+│   ├── data_collector.py           # Enhanced PR and CI data collection
+│   ├── training_cache.py           # Cache management system
+│   ├── utils.py                    # Utility functions
+│   ├── merge_time/                 # PR merge time prediction
+│   │   ├── __init__.py
+│   │   ├── feature_engineer.py    # PR feature extraction
+│   │   ├── model_trainer.py       # PR model training
+│   │   └── predictor.py           # PR prediction interface
+│   └── ci/                        # CI prediction
+│       ├── __init__.py
+│       ├── feature_engineer.py    # CI feature extraction
+│       ├── model_trainer.py       # CI model training
+│       └── predictor.py           # CI prediction interface
 ├── commands/                 # Command-line tools
 │   ├── train_model.py       # Model training command
 │   ├── predict_pr.py        # Single PR prediction
