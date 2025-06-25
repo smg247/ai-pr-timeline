@@ -11,6 +11,7 @@ import sys
 import logging
 import argparse
 from pathlib import Path
+from datetime import datetime
 
 # Add parent directory to path to import our module
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -34,6 +35,10 @@ def main():
                        help='Perform hyperparameter tuning')
     parser.add_argument('--max-prs', type=int, default=1000,
                        help='Maximum number of PRs to collect')
+    parser.add_argument('--max-new-prs', type=int,
+                       help='Maximum number of new PRs to fetch from API (must be <= max-prs)')
+    parser.add_argument('--output-filename', 
+                       help='Custom filename for the saved model (default: auto-generated with timestamp)')
     
     args = parser.parse_args()
     
@@ -47,6 +52,11 @@ def main():
         print("Error: GitHub token is required. Set GITHUB_TOKEN environment variable or use --token")
         sys.exit(1)
     
+    # Validate max-new-prs parameter
+    if args.max_new_prs and args.max_new_prs > args.max_prs:
+        print(f"Error: --max-new-prs ({args.max_new_prs}) cannot be greater than --max-prs ({args.max_prs})")
+        sys.exit(1)
+    
     try:
         # Initialize predictor
         predictor = PRTimelinePredictor(config)
@@ -54,24 +64,37 @@ def main():
         print(f"Training model on repository: {args.repo}")
         print(f"Model type: {args.model_type}")
         print(f"Max PRs to collect: {args.max_prs}")
+        if args.max_new_prs:
+            print(f"Max new PRs from API: {args.max_new_prs}")
         print("-" * 50)
+        
+        # Reset API call counter for training
+        predictor.data_collector.reset_api_call_count()
         
         # Train the model
         results = predictor.train_on_repository(
             args.repo,
             model_type=args.model_type,
             limit=args.max_prs,
+            max_new_prs=args.max_new_prs,
             hyperparameter_tuning=args.tune_hyperparams
         )
         
         # Save the trained model
-        model_filename = f"{args.repo.replace('/', '_')}_{args.model_type}_model.pkl"
+        if args.output_filename:
+            model_filename = args.output_filename
+        else:
+            # Auto-generate filename with timestamp
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            model_filename = f"{args.repo.replace('/', '_')}_{args.model_type}_model_{timestamp}.pkl"
+        
         predictor.save_model(model_filename)
         
         print("\nTraining completed!")
         print(f"Data points used: {results['data_points']}")
         print(f"Training set size: {results['training_size']}")
         print(f"Test set size: {results['test_size']}")
+        print(f"Total API calls made: {predictor.data_collector.get_api_call_count()}")
         
         print("\nModel Performance:")
         metrics = results['metrics']
@@ -84,7 +107,7 @@ def main():
         for i, feature in enumerate(results['feature_importance'][:10], 1):
             print(f"  {i:2d}. {feature['feature']}: {feature['importance']:.4f}")
         
-        print("\nModel saved successfully!")
+        print(f"\nModel saved successfully as: {model_filename}")
         
     except Exception as e:
         print(f"Error during training: {e}")

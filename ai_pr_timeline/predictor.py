@@ -26,6 +26,7 @@ class PRTimelinePredictor:
 
     def train_on_repository(self, repo_name: str,
                            model_type: Optional[str] = None, limit: Optional[int] = None,
+                           max_new_prs: Optional[int] = None,
                            hyperparameter_tuning: bool = False) -> Dict:
         """
         Train a model on data from a single repository.
@@ -34,6 +35,7 @@ class PRTimelinePredictor:
             repo_name: Repository name in format 'owner/repo'
             model_type: Type of model to train
             limit: Maximum number of PRs to collect
+            max_new_prs: Maximum number of new PRs to fetch from API (must be <= limit)
             hyperparameter_tuning: Whether to perform hyperparameter tuning
 
         Returns:
@@ -42,7 +44,7 @@ class PRTimelinePredictor:
         logger.info(f"Training model on repository: {repo_name}")
 
         # Collect data
-        df = self.data_collector.collect_pr_data(repo_name, limit)
+        df = self.data_collector.collect_pr_data(repo_name, limit, max_new_prs)
 
         if len(df) < self.config.min_data_points:
             raise ValueError(f"Insufficient data: {len(df)} PRs found, "
@@ -80,6 +82,7 @@ class PRTimelinePredictor:
 
     def train_on_repositories(self, repo_names: List[str],
                              model_type: Optional[str] = None, limit_per_repo: Optional[int] = None,
+                             max_new_prs_per_repo: Optional[int] = None,
                              hyperparameter_tuning: bool = False) -> Dict:
         """
         Train a model on data from multiple repositories.
@@ -88,6 +91,7 @@ class PRTimelinePredictor:
             repo_names: List of repository names
             model_type: Type of model to train
             limit_per_repo: Maximum number of PRs to collect per repository
+            max_new_prs_per_repo: Maximum number of new PRs to fetch from API per repository
             hyperparameter_tuning: Whether to perform hyperparameter tuning
 
         Returns:
@@ -96,7 +100,7 @@ class PRTimelinePredictor:
         logger.info(f"Training model on {len(repo_names)} repositories")
 
         # Collect data from multiple repositories
-        df = self.data_collector.collect_multiple_repos(repo_names, limit_per_repo)
+        df = self.data_collector.collect_multiple_repos(repo_names, limit_per_repo, max_new_prs_per_repo)
 
         if len(df) < self.config.min_data_points:
             raise ValueError(f"Insufficient data: {len(df)} PRs found, "
@@ -177,7 +181,10 @@ class PRTimelinePredictor:
     def _get_pr_data(self, repo_name: str, pr_number: int) -> Dict:
         """Get data for a specific PR."""
         try:
+            self.data_collector._log_api_call(f"GET /repos/{repo_name}", f"Getting repository for prediction")
             repo = self.data_collector.github.get_repo(repo_name)
+            
+            self.data_collector._log_api_call(f"GET /repos/{repo_name}/pulls/{pr_number}", f"Getting PR #{pr_number} for prediction")
             pr = repo.get_pull(pr_number)
 
             # Extract features similar to data collection

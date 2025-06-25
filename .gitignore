@@ -197,3 +197,4 @@ cython_debug/
 # Project specific
 cache/
 models/
+training_cache/

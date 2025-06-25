@@ -12,8 +12,9 @@ from .config import Config
 from .data_collector import GitHubDataCollector
 from .model_trainer import ModelTrainer
 from .predictor import PRTimelinePredictor
+from .training_cache import TrainingCache
 
 __version__ = "0.1.0"
 __author__ = "AI PR Timeline Team"
 
-__all__ = ["PRTimelinePredictor", "GitHubDataCollector", "ModelTrainer", "Config"]
+__all__ = ["PRTimelinePredictor", "GitHubDataCollector", "ModelTrainer", "Config", "TrainingCache"]

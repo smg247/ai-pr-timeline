@@ -48,10 +48,10 @@ def main():
         print(f"Loading model: {args.model}")
         predictor.load_model(args.model)
         
-        # Get model info
-        model_info = predictor.get_model_metrics()
-        print(f"Model type: {model_info['model_type']}")
-        print(f"Features used: {model_info['feature_count']}")
+        # Display model information
+        print("Model loaded successfully!")
+        if hasattr(predictor.model_trainer, 'feature_names') and predictor.model_trainer.feature_names:
+            print(f"Features used: {len(predictor.model_trainer.feature_names)}")
         print("-" * 50)
         
         # Make prediction
@@ -59,19 +59,12 @@ def main():
         
         result = predictor.predict_pr_timeline(args.repo, args.pr_number)
         
-        print(f"\nPR: {result['pr_title']}")
-        print(f"Repository: {result['repository']}")
-        print(f"PR Number: #{result['pr_number']}")
+        print(f"\nPR #{result['pr_number']} in {result['repository']}")
         
         print(f"\nPredicted Timeline:")
         print(f"  Hours: {result['predicted_hours']:.1f}")
         print(f"  Days: {result['predicted_days']:.1f}")
-        print(f"  Category: {result['time_category']}")
-        
-        print(f"\nConfidence Interval (95%):")
-        ci = result['confidence_interval_hours']
-        print(f"  {ci['lower']:.1f} - {ci['upper']:.1f} hours")
-        print(f"  {ci['lower']/24:.1f} - {ci['upper']/24:.1f} days")
+        print(f"  Confidence: {result['prediction_confidence']}")
         
     except Exception as e:
         print(f"Error during prediction: {e}")

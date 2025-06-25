@@ -32,6 +32,7 @@ class Config:
     data_dir: str = "data"
     model_dir: str = "models"
     cache_dir: str = "cache"
+    training_cache_dir: str = "training_cache"
 
     def __post_init__(self):
         """Load configuration from environment variables."""
@@ -41,6 +42,7 @@ class Config:
         os.makedirs(self.data_dir, exist_ok=True)
         os.makedirs(self.model_dir, exist_ok=True)
         os.makedirs(self.cache_dir, exist_ok=True)
+        os.makedirs(self.training_cache_dir, exist_ok=True)
 
 
 # Default configuration instance
