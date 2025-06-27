@@ -18,14 +18,107 @@ logger = logging.getLogger(__name__)
 class CIPredictor:
     """Main class for predicting CI timelines and success rates."""
 
-    def __init__(self, config: Config = DEFAULT_CONFIG):
+    def __init__(self, config: Config = DEFAULT_CONFIG, cache_only: bool = False):
         self.config = config
-        self.data_collector = GitHubDataCollector(config)
+        self.data_collector = GitHubDataCollector(config, cache_only=cache_only)
         self.duration_trainer = CIModelTrainer(config)
         self.attempts_trainer = CIModelTrainer(config)
         self.success_trainer = CIModelTrainer(config)
         self.feature_engineer = CIFeatureEngineer(config)
         self.trained_models = {}
+
+    def train_models_on_cached_data(self, repo_names: List[str],
+                                    hyperparameter_tuning: bool = False) -> Dict:
+        """
+        Train CI prediction models using only cached data (no API calls).
+
+        Args:
+            repo_names: List of repository names to load cached data from
+            hyperparameter_tuning: Whether to perform hyperparameter tuning
+
+        Returns:
+            Dictionary with training results for all models
+        """
+        logger.info(f"Training CI models on cached data from {len(repo_names)} repositories")
+
+        all_pr_data = []
+        for repo_name in repo_names:
+            try:
+                cached_prs = self.data_collector.training_cache.get_cached_prs_for_repo(repo_name)
+                prs_with_ci = [pr for pr in cached_prs if pr.get('ci_data')]  # Filter to only PRs that have CI data
+                if prs_with_ci:
+                    all_pr_data.extend(prs_with_ci)
+                    logger.info(f"Loaded {len(prs_with_ci)} PRs with CI data from {repo_name}")
+                else:
+                    logger.warning(f"No PRs with CI data found for {repo_name}")
+            except Exception as e:
+                logger.warning(f"Could not load cached data for {repo_name}: {e}")
+
+        if not all_pr_data:
+            raise ValueError("No cached CI data found. Run collect_data.py --data-type ci first.")
+
+        if len(all_pr_data) < self.config.ci_min_data_points:
+            raise ValueError(f"Insufficient CI data: {len(all_pr_data)} PRs found, "
+                           f"minimum {self.config.ci_min_data_points} required")
+
+        results = {}
+
+        try:
+            logger.info("Training CI duration prediction model")
+            X_train, X_test, y_train, y_test = self.duration_trainer.prepare_data(all_pr_data, 'duration')
+            self.duration_trainer.train_model(
+                X_train, y_train, 
+                hyperparameter_tuning=hyperparameter_tuning
+            )
+            duration_metrics = self.duration_trainer.evaluate_model(X_test, y_test)
+            results['duration'] = {
+                'metrics': duration_metrics,
+                'feature_importance': self.duration_trainer.get_feature_importance().to_dict('records')
+            }
+            self.trained_models['duration'] = self.duration_trainer
+            logger.info(f"Duration model trained. MAE: {duration_metrics['mae']:.4f} hours")
+        except Exception as e:
+            logger.error(f"Failed to train duration model: {e}")
+            results['duration'] = {'error': str(e)}
+
+        try:
+            logger.info("Training CI attempts prediction model")
+            X_train, X_test, y_train, y_test = self.attempts_trainer.prepare_data(all_pr_data, 'attempts')
+            self.attempts_trainer.train_model(
+                X_train, y_train,
+                hyperparameter_tuning=hyperparameter_tuning
+            )
+            attempts_metrics = self.attempts_trainer.evaluate_model(X_test, y_test)
+            results['attempts'] = {
+                'metrics': attempts_metrics,
+                'feature_importance': self.attempts_trainer.get_feature_importance().to_dict('records')
+            }
+            self.trained_models['attempts'] = self.attempts_trainer
+            logger.info(f"Attempts model trained. MAE: {attempts_metrics['mae']:.4f} attempts")
+        except Exception as e:
+            logger.error(f"Failed to train attempts model: {e}")
+            results['attempts'] = {'error': str(e)}
+
+        try:
+            logger.info("Training CI success rate prediction model")
+            X_train, X_test, y_train, y_test = self.success_trainer.prepare_data(all_pr_data, 'success')
+            self.success_trainer.train_model(
+                X_train, y_train,
+                hyperparameter_tuning=hyperparameter_tuning
+            )
+            success_metrics = self.success_trainer.evaluate_model(X_test, y_test)
+            results['success'] = {
+                'metrics': success_metrics,
+                'feature_importance': self.success_trainer.get_feature_importance().to_dict('records')
+            }
+            self.trained_models['success'] = self.success_trainer
+            logger.info(f"Success model trained. MAE: {success_metrics['mae']:.4f}")
+        except Exception as e:
+            logger.error(f"Failed to train success model: {e}")
+            results['success'] = {'error': str(e)}
+
+        logger.info("CI model training completed")
+        return results
 
     def train_models(self, repo_names: List[str],
                     limit_per_repo: Optional[int] = None,
@@ -45,86 +138,18 @@ class CIPredictor:
         """
         logger.info(f"Training CI models on {len(repo_names)} repositories")
 
-        # Collect CI data
         if len(repo_names) == 1:
-            _, df = self.data_collector.collect_all_data(
+            _, _ = self.data_collector.collect_all_data(
                 repo_names[0], limit_per_repo, max_new_prs_per_repo,
-                collect_pr_data=False, collect_ci_data=True
+                collect_pr_data=True, collect_ci_data=True  # Need PR data for normalization
             )
         else:
-            _, df = self.data_collector.collect_multiple_repos(
+            _, _ = self.data_collector.collect_multiple_repos(
                 repo_names, limit_per_repo, max_new_prs_per_repo,
-                collect_pr_data=False, collect_ci_data=True
+                collect_pr_data=True, collect_ci_data=True  # Need PR data for normalization
             )
 
-        if df.empty:
-            raise ValueError("No CI data collected")
-
-        if len(df) < self.config.ci_min_data_points:
-            raise ValueError(f"Insufficient CI data: {len(df)} runs found, "
-                           f"minimum {self.config.ci_min_data_points} required")
-
-        results = {}
-
-        # Train duration prediction model
-        try:
-            logger.info("Training CI duration prediction model")
-            X_train, X_test, y_train, y_test = self.duration_trainer.prepare_data(df, 'duration')
-            self.duration_trainer.train_model(
-                X_train, y_train, 
-                hyperparameter_tuning=hyperparameter_tuning
-            )
-            duration_metrics = self.duration_trainer.evaluate_model(X_test, y_test)
-            results['duration'] = {
-                'metrics': duration_metrics,
-                'feature_importance': self.duration_trainer.get_feature_importance().to_dict('records')
-            }
-            self.trained_models['duration'] = self.duration_trainer
-            logger.info(f"Duration model trained. MAE: {duration_metrics['mae']:.4f} hours")
-        except Exception as e:
-            logger.error(f"Failed to train duration model: {e}")
-            results['duration'] = {'error': str(e)}
-
-        # Train attempts prediction model
-        try:
-            logger.info("Training CI attempts prediction model")
-            X_train, X_test, y_train, y_test = self.attempts_trainer.prepare_data(df, 'attempts')
-            self.attempts_trainer.train_model(
-                X_train, y_train,
-                hyperparameter_tuning=hyperparameter_tuning
-            )
-            attempts_metrics = self.attempts_trainer.evaluate_model(X_test, y_test)
-            results['attempts'] = {
-                'metrics': attempts_metrics,
-                'feature_importance': self.attempts_trainer.get_feature_importance().to_dict('records')
-            }
-            self.trained_models['attempts'] = self.attempts_trainer
-            logger.info(f"Attempts model trained. MAE: {attempts_metrics['mae']:.4f} attempts")
-        except Exception as e:
-            logger.error(f"Failed to train attempts model: {e}")
-            results['attempts'] = {'error': str(e)}
-
-        # Train success rate prediction model
-        try:
-            logger.info("Training CI success rate prediction model")
-            X_train, X_test, y_train, y_test = self.success_trainer.prepare_data(df, 'success')
-            self.success_trainer.train_model(
-                X_train, y_train,
-                hyperparameter_tuning=hyperparameter_tuning
-            )
-            success_metrics = self.success_trainer.evaluate_model(X_test, y_test)
-            results['success'] = {
-                'metrics': success_metrics,
-                'feature_importance': self.success_trainer.get_feature_importance().to_dict('records')
-            }
-            self.trained_models['success'] = self.success_trainer
-            logger.info(f"Success model trained. MAE: {success_metrics['mae']:.4f}")
-        except Exception as e:
-            logger.error(f"Failed to train success model: {e}")
-            results['success'] = {'error': str(e)}
-
-        logger.info("CI model training completed")
-        return results
+        return self.train_models_on_cached_data(repo_names, hyperparameter_tuning)  # Now use the cached data for training
 
     def predict_ci_timeline(self, repo_name: str, pr_number: int) -> Dict:
         """
@@ -223,7 +248,6 @@ class CIPredictor:
 
     def _predict_all_models(self, ci_data: Dict, repo_name: str, pr_number: int) -> Dict:
         """Make predictions with all trained models."""
-        # Convert single CI data record to DataFrame for feature engineering
         if isinstance(ci_data, list):
             df = pd.DataFrame(ci_data)
         else:
@@ -235,7 +259,6 @@ class CIPredictor:
             'predictions': {}
         }
 
-        # Duration prediction
         if 'duration' in self.trained_models:
             try:
                 duration_pred = self._predict_with_model(df, 'duration')
@@ -248,7 +271,6 @@ class CIPredictor:
                 logger.warning(f"Duration prediction failed: {e}")
                 predictions['predictions']['duration'] = {'error': str(e)}
 
-        # Attempts prediction
         if 'attempts' in self.trained_models:
             try:
                 attempts_pred = self._predict_with_model(df, 'attempts')
@@ -260,64 +282,50 @@ class CIPredictor:
                 logger.warning(f"Attempts prediction failed: {e}")
                 predictions['predictions']['attempts'] = {'error': str(e)}
 
-        # Success rate prediction
         if 'success' in self.trained_models:
             try:
                 success_pred = self._predict_with_model(df, 'success')
-                success_rate = max(0, min(1, float(success_pred)))  # Clamp between 0 and 1
                 predictions['predictions']['success'] = {
-                    'success_probability': success_rate,
-                    'likely_outcome': 'success' if success_rate > 0.5 else 'failure',
-                    'confidence': 'high' if abs(success_rate - 0.5) > 0.3 else 'medium'
+                    'success_probability': max(0.0, min(1.0, float(success_pred))),
+                    'likely_outcome': 'success' if success_pred > 0.5 else 'failure',
+                    'confidence': 'medium'
                 }
             except Exception as e:
                 logger.warning(f"Success prediction failed: {e}")
                 predictions['predictions']['success'] = {'error': str(e)}
 
-        # Generate comprehensive summary
-        predictions['summary'] = self._generate_prediction_summary(predictions['predictions'])
+        predictions['summary'] = self._generate_prediction_summary(predictions)
 
         return predictions
 
     def _predict_with_model(self, df: pd.DataFrame, model_type: str) -> float:
-        """Make prediction with a specific model type."""
+        """Make a prediction with a specific model type."""
+        if model_type not in self.trained_models:
+            raise ValueError(f"Model {model_type} not trained")
+
         trainer = self.trained_models[model_type]
         
-        # Engineer features for prediction
-        features, _ = trainer.feature_engineer.engineer_features(
-            df, target_type=model_type, include_target=False
+        X, _ = trainer.feature_engineer.engineer_features(
+            df.to_dict('records'), 
+            target_type=model_type,
+            include_target=False
+        )
+        
+        if X.empty:
+            raise ValueError(f"No features generated for {model_type} prediction")
+
+        X_scaled = pd.DataFrame(
+            trainer.feature_engineer.scaler.transform(X),
+            columns=X.columns
         )
 
-        if features.empty:
-            raise ValueError(f"No features available for {model_type} prediction")
-
-        # Ensure feature compatibility
-        if hasattr(trainer, 'feature_names') and trainer.feature_names:         # Ensure all required features are present
-            for feature_name in trainer.feature_names:
-                if feature_name not in features.columns:
-                    features[feature_name] = 0
-
-            # Select only the features the model was trained on
-            features = features[trainer.feature_names]
-
-        # Scale features
-        if hasattr(trainer.feature_engineer, 'scaler') and trainer.feature_engineer.is_fitted:
-            features_scaled = pd.DataFrame(
-                trainer.feature_engineer.scaler.transform(features),
-                columns=features.columns
-            )
-        else:
-            features_scaled = features
-
-        # Make prediction
-        prediction = trainer.model.predict(features_scaled)[0]
-        return prediction
+        prediction = trainer.model.predict(X_scaled)[0]
+        return float(prediction)
 
     def _generate_prediction_summary(self, predictions: Dict) -> Dict:
         """Generate a comprehensive summary of all predictions."""
         summary = {}
 
-        # Extract successful predictions
         if 'duration' in predictions and 'total_duration_hours' in predictions['duration']:
             duration_hours = predictions['duration']['total_duration_hours']
             summary['estimated_completion_time'] = f"{duration_hours:.1f} hours ({duration_hours/24:.1f} days)"
@@ -401,9 +409,15 @@ class CIPredictor:
     def get_ci_summary_for_repo(self, repo_name: str) -> Dict:
         """Get CI summary statistics for a repository."""
         try:
-            _, df = self.data_collector.collect_all_data(repo_name, limit=100,
-                                                        collect_pr_data=False, collect_ci_data=True)
-            return self.data_collector.get_ci_summary(df)
+            # Load cached PR data with embedded CI data
+            cached_prs = self.data_collector.training_cache.get_cached_prs_for_repo(repo_name)
+            prs_with_ci = [pr for pr in cached_prs if pr.get('ci_data')]
+            
+            if not prs_with_ci:
+                logger.warning(f"No CI data found for {repo_name}")
+                return {}
+            
+            return self.data_collector.get_ci_summary(prs_with_ci)
         except Exception as e:
             logger.error(f"Error getting CI summary for {repo_name}: {e}")
-            return {'error': str(e)} 
+            return {} 

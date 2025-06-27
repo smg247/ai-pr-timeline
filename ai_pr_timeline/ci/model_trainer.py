@@ -4,7 +4,7 @@ CI model training module for CI prediction.
 
 import logging
 import joblib
-from typing import Dict, Tuple, Optional
+from typing import Dict, Tuple, Optional, List
 import pandas as pd
 import numpy as np
 from sklearn.model_selection import train_test_split, cross_val_score, GridSearchCV
@@ -30,13 +30,13 @@ class CIModelTrainer:
         self.model_metrics = {}
         self.target_type = 'duration'  # duration, attempts, or success
 
-    def prepare_data(self, df: pd.DataFrame, target_type: str = 'duration') -> Tuple[pd.DataFrame, pd.DataFrame,
+    def prepare_data(self, pr_data_list: List[Dict], target_type: str = 'duration') -> Tuple[pd.DataFrame, pd.DataFrame,
                                                                                    pd.Series, pd.Series]:
         """
         Prepare data for CI model training.
 
         Args:
-            df: Raw CI data DataFrame
+            pr_data_list: List of PR data dictionaries with embedded ci_data
             target_type: Type of target to predict ('duration', 'attempts', 'success')
 
         Returns:
@@ -46,7 +46,7 @@ class CIModelTrainer:
         self.target_type = target_type
 
         # Engineer features
-        X, y = self.feature_engineer.engineer_features(df, target_type=target_type)
+        X, y = self.feature_engineer.engineer_features(pr_data_list, target_type=target_type)
         
         if X.empty or y is None or len(y) == 0:
             raise ValueError("No valid data after feature engineering")

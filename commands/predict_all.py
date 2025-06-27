@@ -12,9 +12,8 @@ from pathlib import Path
 # Add the parent directory to Python path to import ai_pr_timeline
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from ai_pr_timeline.predictor import PRTimelinePredictor
-from ai_pr_timeline.ci_predictor import CIPredictor
-from ai_pr_timeline.unified_data_collector import UnifiedDataCollector
+from ai_pr_timeline.merge_time.predictor import PRTimelinePredictor
+from ai_pr_timeline.ci.predictor import CIPredictor
 from ai_pr_timeline.config import Config
 from ai_pr_timeline.utils import setup_logging
 
@@ -73,11 +72,14 @@ def main():
             pr_prediction = pr_predictor.predict_pr_timeline(args.repo, args.pr)
             combined_results['pr_prediction'] = pr_prediction
             
-            print(f"\n📅 PR MERGE TIME PREDICTION:")
-            print(f"  Expected merge time: {pr_prediction['predicted_hours']:.1f} hours")
-            print(f"  Expected merge time: {pr_prediction['predicted_days']:.1f} days")
-            print(f"  Prediction confidence: {pr_prediction['prediction_confidence']}")
-            
+            if 'error' not in pr_prediction:
+                print(f"\n⏰ PR MERGE TIME PREDICTION:")
+                print(f"  Estimated merge time: {pr_prediction['predicted_hours']:.1f} hours")
+                print(f"  Estimated merge time: {pr_prediction['predicted_days']:.1f} days")
+                print(f"  Confidence level: {pr_prediction['prediction_confidence']}")
+            else:
+                print(f"❌ PR prediction error: {pr_prediction['error']}")
+                
         except FileNotFoundError:
             print(f"⚠️  PR model '{args.pr_model}' not found. Skipping PR prediction.")
             combined_results['pr_prediction'] = {'error': 'Model not found'}

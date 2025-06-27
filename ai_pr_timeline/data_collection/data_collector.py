@@ -4,7 +4,7 @@ Data collection module for fetching both PR and CI data from GitHub API.
 
 import time
 import logging
-from typing import List, Dict, Optional, Tuple
+from typing import List, Dict, Optional, Tuple, Any
 import pandas as pd
 import requests
 from github import Github
@@ -20,17 +20,24 @@ logger = logging.getLogger(__name__)
 class GitHubDataCollector:
     """Enhanced collector for both PR and CI data from GitHub repositories."""
 
-    def __init__(self, config: Config = DEFAULT_CONFIG):
+    def __init__(self, config: Config = DEFAULT_CONFIG, cache_only: bool = False):
         self.config = config
-        if not config.github_token:
-            raise ValueError("GitHub token is required. Set GITHUB_TOKEN environment variable.")
+        self.cache_only = cache_only
+        
+        if not cache_only:
+            if not config.github_token:
+                raise ValueError("GitHub token is required for API access. Set GITHUB_TOKEN environment variable or use cache_only=True for training.")
 
-        self.github = Github(config.github_token)
-        self.session = requests.Session()
-        self.session.headers.update({
-            'Authorization': f'token {config.github_token}',
-            'Accept': 'application/vnd.github.v3+json'
-        })
+            self.github = Github(config.github_token)
+            self.session = requests.Session()
+            self.session.headers.update({
+                'Authorization': f'token {config.github_token}',
+                'Accept': 'application/vnd.github.v3+json'
+            })
+        else:
+            # Cache-only mode - no API clients needed
+            self.github = None
+            self.session = None
         
         # Initialize training cache
         self.training_cache = TrainingCache(config.training_cache_dir)
@@ -76,17 +83,14 @@ class GitHubDataCollector:
         cached_prs = self.training_cache.get_cached_prs_for_repo(repo_name) if collect_pr_data else []
         cached_pr_numbers = self.training_cache.get_cached_pr_numbers(repo_name) if collect_pr_data else set()
         
-        # Load cached CI data
+        # Load cached CI data from training cache
         cached_ci_data = []
+        cached_ci_pr_numbers = set()
         if collect_ci_data:
-            try:
-                cache_file = f"ci_data_{repo_name.replace('/', '_')}.csv"
-                cached_ci_df = self.load_data(cache_file)
-                cached_ci_data = [row.to_dict() for _, row in cached_ci_df.iterrows()] if not cached_ci_df.empty else []
-                if cached_ci_data:
-                    logger.info(f"Found {len(cached_ci_data)} cached CI runs for {repo_name}")
-            except Exception:
-                logger.debug(f"No cached CI data found for {repo_name}")
+            cached_ci_data = self.training_cache.get_all_cached_ci_data(repo_name)
+            cached_ci_pr_numbers = self.training_cache.get_cached_pr_numbers_with_ci(repo_name)
+            if cached_ci_data:
+                logger.info(f"🔧 Found {len(cached_ci_data)} cached CI runs for {repo_name} (from {len(cached_ci_pr_numbers)} PRs)")
         
         if cached_prs:
             logger.info(f"Found {len(cached_prs)} cached PRs for {repo_name}")
@@ -107,10 +111,17 @@ class GitHubDataCollector:
             logger.info(f"Using {max_prs} cached PRs from {repo_name} (no API calls needed)")
             pr_df = pd.DataFrame(pr_data[:max_prs])
             return pr_df, pd.DataFrame()
+        
+        # If in cache-only mode, can't make API calls
+        if self.cache_only:
+            logger.info(f"Cache-only mode: Using {len(pr_data)} cached PRs and {len(ci_data)} cached CI runs from {repo_name}")
+            pr_df = pd.DataFrame(pr_data) if collect_pr_data else pd.DataFrame()
+            ci_df = pd.DataFrame(ci_data) if collect_ci_data else pd.DataFrame()
+            return pr_df, ci_df
 
         try:
             self._log_api_call(f"GET /repos/{repo_name}", f"Getting repository info")
-            repo = self.github.get_repo(repo_name)
+            repo = self.github.get_repo(repo_name)  # type: ignore
             
             self._log_api_call(f"GET /repos/{repo_name}/pulls", f"Getting PRs for data collection")
             prs = repo.get_pulls(state='all' if collect_ci_data else 'closed', 
@@ -123,32 +134,61 @@ class GitHubDataCollector:
                     break
 
                 try:
-                    # Collect PR data if requested
+                    # Skip bot PRs entirely (for both PR and CI data)
+                    if self._is_bot_author(pr):
+                        bot_name = pr.user.login if pr.user else "unknown"
+                        logger.debug(f"Skipped bot PR #{pr.number} by {bot_name}")
+                        continue
+                    
+                    # Collect PR data and CI data together
                     pr_entry = None
-                    if collect_pr_data:
-                        # Skip if already cached
-                        if pr.number in cached_pr_numbers:
-                            continue
-                        
-                        # Only process merged PRs with valid data for PR model
+                    pr_ci_data = []
+                    
+                    # Check what data we need to collect
+                    need_pr_data = collect_pr_data and pr.number not in cached_pr_numbers
+                    need_ci_data = collect_ci_data and pr.number not in cached_ci_pr_numbers
+                    
+                    # Skip if we don't need either
+                    if not need_pr_data and not need_ci_data:
+                        continue
+                    
+                    # For PR data, only process merged PRs
+                    if need_pr_data:
                         if pr.merged and pr.merged_at and pr.created_at:
-                            if self._is_bot_author(pr):
-                                bot_name = pr.user.login if pr.user else "unknown"
-                                logger.debug(f"Skipped bot PR #{pr.number} by {bot_name}")
-                                continue
-
                             pr_entry = self._extract_pr_features(pr)
                             pr_data.append(pr_entry)
                             count += 1
-
-                            # Cache the new PR data
-                            self.training_cache.cache_pr(repo_name, pr_entry)
+                        else:
+                            # Not a merged PR, skip PR data but might still collect CI data
+                            need_pr_data = False
 
                     # Collect CI data if requested
-                    if collect_ci_data:
+                    if need_ci_data:
                         pr_ci_data = self._extract_pr_ci_data(pr, repo_name)
                         if pr_ci_data:
                             ci_data.extend(pr_ci_data)
+
+                    # Cache the data together
+                    if need_pr_data and pr_entry:
+                        # Cache merged PR with CI data if both were collected
+                        self.training_cache.cache_pr(repo_name, pr_entry, pr_ci_data if pr_ci_data else None)
+                    elif need_ci_data and pr_ci_data:
+                        # If we only collected CI data, try to update existing PR cache or create minimal PR entry
+                        existing_pr = self.training_cache.get_cached_pr(repo_name, pr.number)
+                        if existing_pr:
+                            # Update existing cached PR with CI data
+                            self.training_cache.cache_pr(repo_name, existing_pr, pr_ci_data)
+                        else:
+                            # Create minimal PR entry for CI data storage (for non-merged PRs)
+                            minimal_pr_entry = {
+                                'pr_number': pr.number,
+                                'title': pr.title,
+                                'repository': repo_name,
+                                'created_at': pr.created_at,
+                                'merged_at': pr.merged_at,  # Will be None for non-merged PRs
+                                'pr_state': pr.state
+                            }
+                            self.training_cache.cache_pr(repo_name, minimal_pr_entry, pr_ci_data)
 
                     new_prs_processed += 1
                     
@@ -164,15 +204,6 @@ class GitHubDataCollector:
             logger.warning("GitHub API rate limit exceeded. Waiting...")
             time.sleep(60)
             return self.collect_all_data(repo_name, limit, max_new_prs, collect_pr_data, collect_ci_data)
-
-        # Cache CI data if collected
-        if collect_ci_data and len(ci_data) > 0:
-            try:
-                cache_file = f"ci_data_{repo_name.replace('/', '_')}.csv"
-                cache_df = pd.DataFrame(ci_data)
-                self.save_data(cache_df, cache_file)
-            except Exception as e:
-                logger.warning(f"Could not cache CI data: {e}")
 
         # Create DataFrames
         pr_df = pd.DataFrame(pr_data) if collect_pr_data else pd.DataFrame()
@@ -241,44 +272,34 @@ class GitHubDataCollector:
         return ci_df
 
     def _extract_pr_features(self, pr) -> Dict:
-        """
-        Extract features from a single PR (same as original data_collector).
-        """
-        # Calculate merge time in hours (only for merged PRs), excluding draft time
+        """Extract features from a single PR."""
         merge_time_hours = None
         if pr.merged_at and pr.created_at:
             total_time_hours = (pr.merged_at - pr.created_at).total_seconds() / 3600
             draft_time_hours = self._calculate_draft_time(pr)
-            merge_time_hours = max(0, total_time_hours - draft_time_hours)
+            merge_time_hours = max(0, total_time_hours - draft_time_hours)  # Exclude draft time from merge time
 
-        # Get review data
         self._log_api_call(f"GET /repos/{pr.base.repo.full_name}/pulls/{pr.number}/reviews", f"PR #{pr.number} reviews")
         reviews = list(pr.get_reviews())
         review_count = len(reviews)
 
-        # Get comment data
         self._log_api_call(f"GET /repos/{pr.base.repo.full_name}/issues/{pr.number}/comments", f"PR #{pr.number} comments")
         comments = list(pr.get_issue_comments())
         comment_count = len(comments)
 
-        # Get commit data
         self._log_api_call(f"GET /repos/{pr.base.repo.full_name}/pulls/{pr.number}/commits", f"PR #{pr.number} commits")
         commits = list(pr.get_commits())
         commit_count = len(commits)
 
-        # Calculate time features
         created_hour = pr.created_at.hour
         created_day = pr.created_at.weekday()
 
-        # Get file changes
         files_changed = pr.changed_files
         additions = pr.additions
         deletions = pr.deletions
 
-        # Get author info
         author_association = getattr(pr, 'author_association', 'NONE')
 
-        # Check if it's a draft PR
         is_draft = pr.draft if hasattr(pr, 'draft') else False
 
         result = {
@@ -300,33 +321,26 @@ class GitHubDataCollector:
             'repository': pr.base.repo.full_name
         }
 
-        # Only include merge_time_hours for merged PRs
         if merge_time_hours is not None:
             result['merge_time_hours'] = merge_time_hours
 
         return result
 
     def _extract_pr_ci_data(self, pr, repo_name: str) -> List[Dict]:
-        """
-        Extract CI data from a single PR (same as ci_data_collector).
-        """
+        """Extract CI data from a single PR."""
         ci_runs = []
         
         try:
-            # Get status checks
             commits = list(pr.get_commits())
             if not commits:
                 return ci_runs
                 
-            # Focus on the latest commit for CI data
-            latest_commit = commits[-1]
+            latest_commit = commits[-1]  # Focus on the latest commit for CI data
             
-            # Get status checks
             self._log_api_call(f"GET /repos/{repo_name}/statuses/{latest_commit.sha}", 
                              f"PR #{pr.number} status checks")
             statuses = list(latest_commit.get_statuses())
             
-            # Get check runs (newer GitHub Actions format)
             try:
                 self._log_api_call(f"GET /repos/{repo_name}/commits/{latest_commit.sha}/check-runs", 
                                  f"PR #{pr.number} check runs")
@@ -335,13 +349,11 @@ class GitHubDataCollector:
                 logger.debug(f"Could not get check runs for PR #{pr.number}: {e}")
                 check_runs = []
 
-            # Process status checks
             for status in statuses:
                 ci_run_data = self._extract_status_data(status, pr, repo_name)
                 if ci_run_data:
                     ci_runs.append(ci_run_data)
 
-            # Process check runs
             for check_run in check_runs:
                 ci_run_data = self._extract_check_run_data(check_run, pr, repo_name)
                 if ci_run_data:
@@ -353,69 +365,35 @@ class GitHubDataCollector:
         return ci_runs
 
     def _extract_status_data(self, status, pr, repo_name: str) -> Optional[Dict]:
-        """Extract data from a GitHub status check."""
+        """Extract normalized data from a GitHub status check."""
         try:
-            # Calculate duration if available
             duration_seconds = None
             if hasattr(status, 'created_at') and hasattr(status, 'updated_at'):
                 if status.created_at and status.updated_at:
                     duration_seconds = (status.updated_at - status.created_at).total_seconds()
 
             return {
-                'repository': repo_name,
-                'pr_number': pr.number,
-                'pr_title': pr.title,
-                'pr_created_at': pr.created_at,
-                'pr_merged_at': pr.merged_at,
-                'pr_state': pr.state,
-                'ci_type': 'status',
                 'ci_name': status.context,
-                'ci_state': status.state,
-                'ci_description': status.description,
                 'ci_target_url': status.target_url,
-                'ci_created_at': status.created_at,
-                'ci_updated_at': status.updated_at,
-                'ci_duration_seconds': duration_seconds,
-                'pr_files_changed': pr.changed_files,
-                'pr_additions': pr.additions,
-                'pr_deletions': pr.deletions,
-                'pr_commits': pr.commits,
-                'pr_author': pr.user.login if pr.user else None,
-                'pr_is_draft': getattr(pr, 'draft', False)
+                'ci_state': status.state,
+                'ci_duration_seconds': duration_seconds
             }
         except Exception as e:
             logger.debug(f"Error extracting status data: {e}")
             return None
 
     def _extract_check_run_data(self, check_run, pr, repo_name: str) -> Optional[Dict]:
-        """Extract data from a GitHub check run."""
+        """Extract normalized data from a GitHub check run."""
         try:
-            # Calculate duration
             duration_seconds = None
             if check_run.started_at and check_run.completed_at:
                 duration_seconds = (check_run.completed_at - check_run.started_at).total_seconds()
 
             return {
-                'repository': repo_name,
-                'pr_number': pr.number,
-                'pr_title': pr.title,
-                'pr_created_at': pr.created_at,
-                'pr_merged_at': pr.merged_at,
-                'pr_state': pr.state,
-                'ci_type': 'check_run',
                 'ci_name': check_run.name,
-                'ci_state': check_run.conclusion or check_run.status,
-                'ci_description': check_run.output.summary if check_run.output else None,
                 'ci_target_url': check_run.html_url,
-                'ci_created_at': check_run.started_at,
-                'ci_updated_at': check_run.completed_at,
-                'ci_duration_seconds': duration_seconds,
-                'pr_files_changed': pr.changed_files,
-                'pr_additions': pr.additions,
-                'pr_deletions': pr.deletions,
-                'pr_commits': pr.commits,
-                'pr_author': pr.user.login if pr.user else None,
-                'pr_is_draft': getattr(pr, 'draft', False)
+                'ci_state': check_run.conclusion or check_run.status,
+                'ci_duration_seconds': duration_seconds
             }
         except Exception as e:
             logger.debug(f"Error extracting check run data: {e}")
@@ -428,11 +406,9 @@ class GitHubDataCollector:
             if not author:
                 return False
 
-            # Check if user type is Bot
             if hasattr(author, 'type') and author.type == 'Bot':
                 return True
 
-            # Check for common bot username patterns
             username = author.login.lower()
             bot_patterns = [
                 '[bot]', 'bot-', '-bot', 'dependabot', 'renovate',
@@ -450,7 +426,6 @@ class GitHubDataCollector:
     def _calculate_draft_time(self, pr) -> float:
         """Calculate total time the PR spent in draft state."""
         try:
-            # Get timeline events
             self._log_api_call(f"GET /repos/{pr.base.repo.full_name}/issues/{pr.number}/events", 
                              f"PR #{pr.number} timeline events")
             events = list(pr.get_issue_events())
@@ -463,30 +438,24 @@ class GitHubDataCollector:
                         'created_at': event.created_at
                     })
 
-            # Sort events by time
             timeline_events.sort(key=lambda x: x['created_at'])
 
-            # Calculate draft periods
             draft_time_hours = 0.0
             is_draft = pr.draft if hasattr(pr, 'draft') else False
 
-            # Check if PR was originally created as draft
             if is_draft or any(event['event'] == 'ready_for_review' for event in timeline_events):
                 draft_start = pr.created_at
                 current_state_is_draft = True
 
                 for event in timeline_events:
                     if event['event'] == 'ready_for_review' and current_state_is_draft:
-                        # End of draft period
                         draft_duration = (event['created_at'] - draft_start).total_seconds() / 3600
                         draft_time_hours += draft_duration
                         current_state_is_draft = False
                     elif event['event'] == 'converted_to_draft' and not current_state_is_draft:
-                        # Start of new draft period
                         draft_start = event['created_at']
                         current_state_is_draft = True
 
-                # If still in draft at merge time, add the final period
                 if current_state_is_draft and pr.merged_at:
                     final_duration = (pr.merged_at - draft_start).total_seconds() / 3600
                     draft_time_hours += final_duration
@@ -497,45 +466,59 @@ class GitHubDataCollector:
             logger.warning(f"Error calculating draft time for PR #{pr.number}: {e}")
             return 0.0
 
-    def get_ci_summary(self, df: pd.DataFrame) -> Dict:
-        """Generate a summary of CI data."""
-        if df.empty:
+    def get_ci_summary(self, pr_data_list: List[Dict]) -> Dict:
+        """Generate a summary of CI data from PR data with embedded ci_data."""
+        if not pr_data_list:
             return {}
 
-        summary = {
-            'total_ci_runs': len(df),
-            'unique_repositories': df['repository'].nunique(),
-            'unique_prs': df['pr_number'].nunique(),
-            'unique_ci_tests': df['ci_name'].nunique(),
+        all_ci_runs = []
+        pr_count = 0
+        
+        for pr_data in pr_data_list:
+            ci_data = pr_data.get('ci_data', [])
+            if ci_data:
+                all_ci_runs.extend(ci_data)
+                pr_count += 1
+
+        if not all_ci_runs:
+            return {}
+
+        summary: Dict[str, Any] = {
+            'total_ci_runs': len(all_ci_runs),
+            'unique_prs': pr_count,
+            'unique_ci_tests': len(set(run.get('ci_name', '') for run in all_ci_runs)),
         }
 
-        # Success rates by state
-        if 'ci_state' in df.columns:
-            state_counts = df['ci_state'].value_counts()
-            total_runs = len(df)
-            if total_runs > 0:
-                success_count = state_counts.get('success', 0) or 0
-                failure_count = state_counts.get('failure', 0) or 0
-                error_count = state_counts.get('error', 0) or 0
-                summary['success_rate'] = success_count / total_runs
-                summary['failure_rate'] = (failure_count + error_count) / total_runs
-            else:
-                summary['success_rate'] = 0.0
-                summary['failure_rate'] = 0.0
-            summary['state_distribution'] = state_counts.to_dict()
+        states = [run.get('ci_state') for run in all_ci_runs if run.get('ci_state')]
+        if states:
+            state_counts = {}
+            for state in states:
+                state_counts[state] = state_counts.get(state, 0) + 1
+            
+            total_runs = len(states)
+            success_count = state_counts.get('success', 0)
+            failure_count = state_counts.get('failure', 0) + state_counts.get('error', 0)
+            
+            summary['success_rate'] = success_count / total_runs if total_runs > 0 else 0.0
+            summary['failure_rate'] = failure_count / total_runs if total_runs > 0 else 0.0
+            summary['state_distribution'] = state_counts
 
-        # Duration statistics
-        if 'ci_duration_seconds' in df.columns:
-            duration_data = df['ci_duration_seconds'].dropna()
-            if not duration_data.empty:
-                summary['avg_duration_seconds'] = duration_data.mean()
-                summary['median_duration_seconds'] = duration_data.median()
-                summary['max_duration_seconds'] = duration_data.max()
-                summary['min_duration_seconds'] = duration_data.min()
+        durations = [run.get('ci_duration_seconds') for run in all_ci_runs 
+                    if run.get('ci_duration_seconds') is not None]
+        if durations:
+            summary['avg_duration_seconds'] = sum(durations) / len(durations)
+            summary['median_duration_seconds'] = sorted(durations)[len(durations) // 2]
+            summary['max_duration_seconds'] = max(durations)
+            summary['min_duration_seconds'] = min(durations)
 
-        # Most common CI tests
-        if 'ci_name' in df.columns:
-            summary['top_ci_tests'] = df['ci_name'].value_counts().head(10).to_dict()
+        test_names = [run.get('ci_name') for run in all_ci_runs if run.get('ci_name')]
+        if test_names:
+            test_counts = {}
+            for name in test_names:
+                test_counts[name] = test_counts.get(name, 0) + 1
+            
+            sorted_tests = sorted(test_counts.items(), key=lambda x: x[1], reverse=True)
+            summary['top_ci_tests'] = dict(sorted_tests[:10])  # Get top 10 tests
 
         return summary
 

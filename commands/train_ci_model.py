@@ -17,19 +17,14 @@ from ai_pr_timeline.utils import setup_logging
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Train CI prediction models')
+    parser = argparse.ArgumentParser(description='Train CI prediction models using cached data')
     parser.add_argument('--repos', required=True, nargs='+',
-                       help='Repository names in format owner/repo')
-    parser.add_argument('--token', help='GitHub token (or set GITHUB_TOKEN env var)')
+                       help='Repository names in format owner/repo (uses cached data)')
     parser.add_argument('--model-type', default='random_forest',
                        choices=['random_forest', 'xgboost', 'lightgbm'],
                        help='Type of model to train (default: random_forest)')
     parser.add_argument('--model-name', default='ci_model',
                        help='Base name for saved models (default: ci_model)')
-    parser.add_argument('--max-prs', type=int, default=100,
-                       help='Maximum number of PRs to analyze per repository (default: 100)')
-    parser.add_argument('--max-new-prs', type=int,
-                       help='Maximum number of new PRs to fetch from API per repository (must be <= max-prs)')
     parser.add_argument('--hyperparameter-tuning', action='store_true',
                        help='Enable hyperparameter tuning (slower but potentially better)')
     parser.add_argument('--output', help='Output file for training results (JSON)')
@@ -42,39 +37,26 @@ def main():
     # Set up logging
     setup_logging(args.log_level)
     
-    # Set up configuration
+    # Set up configuration (no GitHub token needed for cache-only training)
     config = Config()
-    config.github_token = args.token or os.getenv('GITHUB_TOKEN')
+    config.github_token = None  # Not needed for training with cached data
     config.ci_model_type = args.model_type
     
-    if not config.github_token:
-        print("Error: GitHub token is required. Set GITHUB_TOKEN environment variable or use --token")
-        sys.exit(1)
-    
-    # Validate max-new-prs parameter
-    if args.max_new_prs and args.max_new_prs > args.max_prs:
-        print(f"Error: --max-new-prs ({args.max_new_prs}) cannot be greater than --max-prs ({args.max_prs})")
-        sys.exit(1)
-    
     try:
-        # Initialize CI predictor
-        ci_predictor = CIPredictor(config)
+        # Initialize CI predictor in cache-only mode
+        ci_predictor = CIPredictor(config, cache_only=True)
         
         print(f"Training CI models on repositories: {', '.join(args.repos)}")
         print(f"Model type: {args.model_type}")
-        print(f"Max PRs to analyze per repository: {args.max_prs}")
-        if args.max_new_prs:
-            print(f"Max new PRs from API per repository: {args.max_new_prs}")
+        print(f"Using cached data only (no API calls)")
         
         if args.hyperparameter_tuning:
             print("Hyperparameter tuning enabled - this may take longer")
         print("-" * 50)
         
-        # Train models
-        results = ci_predictor.train_models(
+        # Train models using cached data only
+        results = ci_predictor.train_models_on_cached_data(
             repo_names=args.repos,
-            limit_per_repo=args.max_prs,
-            max_new_prs_per_repo=args.max_new_prs,
             hyperparameter_tuning=args.hyperparameter_tuning
         )
         
@@ -112,6 +94,7 @@ def main():
         
         print(f"\nModels saved with base name: {args.model_name}")
         print("Use predict_ci.py to make predictions with these models")
+        print(f"\n💡 Tip: Use collect_data.py --data-type ci to refresh cached CI data when needed")
         
     except Exception as e:
         print(f"Error: {e}")

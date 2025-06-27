@@ -79,32 +79,37 @@ class TrainingCache:
                 from datetime import datetime
                 cached_data['merged_at'] = datetime.fromisoformat(cached_data['merged_at'].replace('Z', '+00:00'))
             
-            logger.debug(f"Retrieved cached PR #{pr_number} from {repo_name}")
+            ci_count = len(cached_data.get('ci_data', []))
+            logger.debug(f"📖 Loaded cache file: {cache_file.relative_to(self.cache_dir)} (PR #{pr_number}, {ci_count} CI runs)")
             return cached_data
             
         except Exception as e:
             logger.warning(f"Error reading cached PR #{pr_number} from {repo_name}: {e}")
             return None
 
-    def cache_pr(self, repo_name: str, pr_data: Dict) -> bool:
+    def cache_pr(self, repo_name: str, pr_data: Dict, ci_data: Optional[List[Dict]] = None) -> bool:
         """
-        Cache PR data if it's merged.
+        Cache PR data (and optional CI data).
         
         Args:
             repo_name: Repository name
             pr_data: PR data dictionary
+            ci_data: Optional list of CI run data for this PR
             
         Returns:
-            True if cached, False if not cached (not merged or error)
+            True if cached, False if error occurred
         """
-        # Only cache merged PRs
-        if not pr_data.get('merged_at'):
-            logger.debug(f"Skipping cache for PR #{pr_data.get('pr_number')} - not merged")
-            return False
-        
         pr_number = pr_data.get('pr_number')
         if not pr_number:
             logger.warning("PR data missing pr_number, cannot cache")
+            return False
+        
+        # Always cache if we have CI data, or if it's a merged PR
+        has_ci_data = ci_data and len(ci_data) > 0
+        is_merged = pr_data.get('merged_at') is not None
+        
+        if not has_ci_data and not is_merged:
+            logger.debug(f"Skipping cache for PR #{pr_number} - not merged and no CI data")
             return False
         
         cache_file = self._get_pr_cache_file(repo_name, pr_number)
@@ -122,6 +127,9 @@ class TrainingCache:
                         should_cache = False
             
             if should_cache:
+                # Check if file exists before writing (for logging)
+                file_exists = cache_file.exists()
+                
                 # Prepare data for caching (convert datetime objects to strings)
                 cache_data = pr_data.copy()
                 
@@ -132,6 +140,18 @@ class TrainingCache:
                 if 'merged_at' in cache_data and hasattr(cache_data['merged_at'], 'isoformat'):
                     cache_data['merged_at'] = cache_data['merged_at'].isoformat()
                 
+                # Add CI data if provided
+                if ci_data:
+                    # Convert datetime objects in CI data to ISO format strings
+                    ci_data_serializable = []
+                    for ci_run in ci_data:
+                        ci_run_copy = ci_run.copy()
+                        for date_field in ['ci_created_at', 'ci_updated_at', 'pr_created_at', 'pr_merged_at']:
+                            if date_field in ci_run_copy and hasattr(ci_run_copy[date_field], 'isoformat'):
+                                ci_run_copy[date_field] = ci_run_copy[date_field].isoformat()
+                        ci_data_serializable.append(ci_run_copy)
+                    cache_data['ci_data'] = ci_data_serializable
+                
                 # Add cache metadata
                 cache_data['_cache_hash'] = self._get_pr_hash(pr_data)
                 cache_data['_cached_at'] = str(datetime.now())
@@ -140,6 +160,11 @@ class TrainingCache:
                 with open(cache_file, 'w', encoding='utf-8') as f:
                     json.dump(cache_data, f, indent=2, default=str)
                 
+                # Log the file operation with details
+                ci_count = len(ci_data) if ci_data else 0
+                action = "Updated" if file_exists else "Created"
+                cache_type = "merged PR" if is_merged else "CI data"
+                logger.info(f"📁 {action} cache file: {cache_file.relative_to(self.cache_dir)} (PR #{pr_number}, {ci_count} CI runs, {cache_type})")
                 logger.debug(f"Cached PR #{pr_number} from {repo_name}")
             
             return True
@@ -166,7 +191,8 @@ class TrainingCache:
                 logger.warning(f"Error reading cache file {cache_file}: {e}")
                 continue
         
-        logger.info(f"Retrieved {len(cached_prs)} cached PRs for {repo_name}")
+        total_ci_runs = sum(len(pr.get('ci_data', [])) for pr in cached_prs)
+        logger.info(f"📚 Retrieved {len(cached_prs)} cached PRs for {repo_name} (total: {total_ci_runs} CI runs)")
         return cached_prs
 
     def get_cached_pr_numbers(self, repo_name: str) -> Set[int]:
@@ -185,6 +211,38 @@ class TrainingCache:
                 continue
         
         return cached_numbers
+
+    def get_cached_pr_numbers_with_ci(self, repo_name: str) -> Set[int]:
+        """Get set of cached PR numbers that have CI data for a repository."""
+        repo_dir = self._get_repo_cache_dir(repo_name)
+        cached_numbers_with_ci = set()
+        
+        if not repo_dir.exists():
+            return cached_numbers_with_ci
+        
+        for cache_file in repo_dir.glob("pr_*.json"):
+            try:
+                pr_number = int(cache_file.stem.split('_')[1])
+                pr_data = self.get_cached_pr(repo_name, pr_number)
+                if pr_data and pr_data.get('ci_data'):
+                    cached_numbers_with_ci.add(pr_number)
+            except ValueError:
+                continue
+        
+        return cached_numbers_with_ci
+
+    def get_all_cached_ci_data(self, repo_name: str) -> List[Dict]:
+        """Get all cached CI data for a repository."""
+        all_ci_data = []
+        cached_prs = self.get_cached_prs_for_repo(repo_name)
+        
+        for pr_data in cached_prs:
+            ci_data = pr_data.get('ci_data', [])
+            if ci_data:
+                all_ci_data.extend(ci_data)
+        
+        logger.info(f"🔧 Retrieved {len(all_ci_data)} cached CI runs for {repo_name}")
+        return all_ci_data
 
     def clear_repo_cache(self, repo_name: str) -> int:
         """Clear all cached data for a repository."""

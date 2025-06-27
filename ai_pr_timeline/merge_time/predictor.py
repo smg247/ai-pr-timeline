@@ -17,12 +17,78 @@ logger = logging.getLogger(__name__)
 class PRTimelinePredictor:
     """Main class for predicting PR merge timelines."""
 
-    def __init__(self, config: Config = DEFAULT_CONFIG):
+    def __init__(self, config: Config = DEFAULT_CONFIG, cache_only: bool = False):
         self.config = config
-        self.data_collector = GitHubDataCollector(config)
+        self.data_collector = GitHubDataCollector(config, cache_only=cache_only)
         self.model_trainer = ModelTrainer(config)
         self.feature_engineer = FeatureEngineer(config)
         self.is_trained = False
+
+    def train_on_cached_data(self, repo_names: List[str],
+                            model_type: Optional[str] = None,
+                            hyperparameter_tuning: bool = False) -> Dict:
+        """
+        Train a model using only cached data (no API calls).
+
+        Args:
+            repo_names: List of repository names to load cached data from
+            model_type: Type of model to train
+            hyperparameter_tuning: Whether to perform hyperparameter tuning
+
+        Returns:
+            Dictionary with training metrics
+        """
+        logger.info(f"Training model on cached data from repositories: {repo_names}")
+
+        # Load cached data only
+        all_pr_data = []
+        for repo_name in repo_names:
+            cached_prs = self.data_collector.training_cache.get_cached_prs_for_repo(repo_name)
+            if cached_prs:
+                all_pr_data.extend(cached_prs)
+                logger.info(f"Loaded {len(cached_prs)} cached PRs from {repo_name}")
+            else:
+                logger.warning(f"No cached data found for {repo_name}")
+
+        if not all_pr_data:
+            raise ValueError("No cached PR data found. Run collect_data.py first to collect data.")
+
+        # Convert to DataFrame
+        df = pd.DataFrame(all_pr_data)
+
+        if len(df) < self.config.min_data_points:
+            raise ValueError(f"Insufficient data: {len(df)} PRs found, "
+                           f"minimum {self.config.min_data_points} required")
+
+        # Prepare data
+        X_train, X_test, y_train, y_test = self.model_trainer.prepare_data(df)
+
+        # Train model
+        self.model_trainer.train_model(
+            X_train, y_train,
+            model_type=model_type,
+            hyperparameter_tuning=hyperparameter_tuning
+        )
+
+        # Evaluate model
+        metrics = self.model_trainer.evaluate_model(X_test, y_test)
+        self.is_trained = True
+
+        # Return comprehensive results
+        results = {
+            'data_points': len(df),
+            'training_size': len(X_train),
+            'test_size': len(X_test),
+            'metrics': metrics,
+            'mae': metrics['mae'],
+            'rmse': metrics['rmse'],
+            'r2': metrics['r2'],
+            'mape': metrics['mape'],
+            'feature_importance': self.get_feature_importance(20).to_dict('records')
+        }
+
+        logger.info(f"Model training completed. MAE: {metrics['mae']:.2f} hours")
+        return results
 
     def train_on_repository(self, repo_name: str,
                            model_type: Optional[str] = None, limit: Optional[int] = None,
@@ -184,7 +250,7 @@ class PRTimelinePredictor:
         """Get data for a specific PR."""
         try:
             self.data_collector._log_api_call(f"GET /repos/{repo_name}", f"Getting repository for prediction")
-            repo = self.data_collector.github.get_repo(repo_name)
+            repo = self.data_collector.github.get_repo(repo_name) #type: ignore
             
             self.data_collector._log_api_call(f"GET /repos/{repo_name}/pulls/{pr_number}", f"Getting PR #{pr_number} for prediction")
             pr = repo.get_pull(pr_number)

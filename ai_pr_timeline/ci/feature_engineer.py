@@ -26,14 +26,14 @@ class CIFeatureEngineer:
         self.tfidf_vectorizer = None
         self.is_fitted = False
 
-    def engineer_features(self, df: pd.DataFrame,
+    def engineer_features(self, pr_data_list: List[Dict],
                          target_type: str = 'duration',
                          include_target: bool = True) -> Tuple[pd.DataFrame, Optional[pd.Series]]:
         """
-        Engineer features from raw CI data.
+        Engineer features from PR data with embedded CI data.
 
         Args:
-            df: Raw CI data DataFrame
+            pr_data_list: List of PR data dictionaries with embedded ci_data
             target_type: Type of target to predict ('duration', 'attempts', 'success')
             include_target: Whether to include target variable
 
@@ -42,146 +42,119 @@ class CIFeatureEngineer:
         """
         logger.info(f"Engineering CI features for target: {target_type}")
 
-        if df.empty:
+        if not pr_data_list:
             return pd.DataFrame(), None
 
-        # Make a copy to avoid modifying original data
-        data = df.copy()
+        pr_aggregated = self._aggregate_ci_from_pr_data(pr_data_list)
 
-        # Aggregate CI data by PR for prediction
-        pr_aggregated = self._aggregate_ci_by_pr(data)
+        if not pr_aggregated:
+            return pd.DataFrame(), None
 
-        # Extract basic features
-        features = self._extract_basic_features(pr_aggregated)
+        df = pd.DataFrame(pr_aggregated)
 
-        # Extract CI-specific features
-        ci_features = self._extract_ci_features(pr_aggregated)
+        features = self._extract_basic_features(df)
+
+        ci_features = self._extract_ci_features(df)
         features = pd.concat([features, ci_features], axis=1)
 
-        # Text features (optional)
         if self.config.include_ci_text_features:
-            text_features = self._extract_text_features(pr_aggregated)
+            text_features = self._extract_text_features(df)
             if text_features is not None and not text_features.empty:
                 features = pd.concat([features, text_features], axis=1)
 
-        # Handle categorical variables
         features = self._encode_categorical_features(features)
-
-        # Handle missing values
         features = self._handle_missing_values(features)
-
-        # Balance feature importance
         features = self._balance_feature_weights(features)
 
         logger.info(f"Engineered {len(features.columns)} CI features")
 
-        # Extract target variable if requested
         target = None
         if include_target:
-            target = self._extract_target(pr_aggregated, target_type)
+            target = self._extract_target(df, target_type)
 
         return features, target
 
-    def _aggregate_ci_by_pr(self, df: pd.DataFrame) -> pd.DataFrame:
+    def _aggregate_ci_from_pr_data(self, pr_data_list: List[Dict]) -> List[Dict]:
         """
-        Aggregate CI data by PR number for prediction.
+        Aggregate CI data from PR data list with embedded ci_data.
 
         Args:
-            df: Raw CI data DataFrame
+            pr_data_list: List of PR data dictionaries with embedded ci_data
 
         Returns:
-            DataFrame with aggregated CI data per PR
+            List of aggregated PR data with CI features
         """
-        if df.empty:
-            return pd.DataFrame()
-
-        # Group by PR and repository
-        groupby_cols = ['repository', 'pr_number']
-        pr_groups = df.groupby(groupby_cols)
-
         aggregated_data = []
 
-        for key, group in pr_groups:
-            if isinstance(key, tuple) and len(key) == 2:
-                repo, pr_num = key
-            else:
+        for pr_data in pr_data_list:
+            ci_data = pr_data.get('ci_data', [])
+            
+            if not ci_data:
                 continue
-            pr_data = self._aggregate_single_pr(group)
-            pr_data['repository'] = repo
-            pr_data['pr_number'] = pr_num
-            aggregated_data.append(pr_data)
+                
+            aggregated_pr = self._aggregate_single_pr_normalized(pr_data, ci_data)
+            if aggregated_pr:
+                aggregated_data.append(aggregated_pr)
 
-        return pd.DataFrame(aggregated_data)
+        return aggregated_data
 
-    def _aggregate_single_pr(self, pr_ci_data: pd.DataFrame) -> Dict:
-        """Aggregate CI data for a single PR."""
-        if pr_ci_data.empty:
+    def _aggregate_single_pr_normalized(self, pr_data: Dict, ci_data: List[Dict]) -> Dict:
+        """Aggregate CI data for a single PR with normalized format."""
+        if not ci_data:
             return {}
 
-        # Basic PR info (should be the same for all CI runs)
-        first_row = pr_ci_data.iloc[0]
-        
         aggregated = {
-            'pr_title': first_row.get('pr_title', ''),
-            'pr_created_at': first_row.get('pr_created_at'),
-            'pr_merged_at': first_row.get('pr_merged_at'),
-            'pr_state': first_row.get('pr_state'),
-            'pr_files_changed': first_row.get('pr_files_changed', 0),
-            'pr_additions': first_row.get('pr_additions', 0),
-            'pr_deletions': first_row.get('pr_deletions', 0),
-            'pr_commits': first_row.get('pr_commits', 0),
-            'pr_author': first_row.get('pr_author'),
-            'pr_is_draft': first_row.get('pr_is_draft', False),
+            'pr_title': pr_data.get('title', ''),
+            'pr_number': pr_data.get('pr_number'),
+            'repository': pr_data.get('repository'),
+            'pr_files_changed': pr_data.get('files_changed', 0),
+            'pr_additions': pr_data.get('additions', 0),
+            'pr_deletions': pr_data.get('deletions', 0),
+            'pr_commits': pr_data.get('commit_count', 0),
+            'pr_is_draft': pr_data.get('is_draft', False),
         }
 
-        # CI-specific aggregations
-        ci_runs = pr_ci_data[pr_ci_data['ci_duration_seconds'].notna()]
+        ci_runs_with_duration = [run for run in ci_data if run.get('ci_duration_seconds') is not None]
         
-        if not ci_runs.empty:
-            # Duration statistics
-            aggregated['ci_total_duration'] = ci_runs['ci_duration_seconds'].sum()
-            aggregated['ci_avg_duration'] = ci_runs['ci_duration_seconds'].mean()
-            aggregated['ci_max_duration'] = ci_runs['ci_duration_seconds'].max()
-            aggregated['ci_min_duration'] = ci_runs['ci_duration_seconds'].min()
-
-            # Test counts and success rates
-            aggregated['ci_total_runs'] = len(pr_ci_data)
-            aggregated['ci_unique_tests'] = pr_ci_data['ci_name'].nunique()
-            aggregated['ci_successful_runs'] = len(pr_ci_data[pr_ci_data['ci_state'] == 'success'])
-            aggregated['ci_failed_runs'] = len(pr_ci_data[pr_ci_data['ci_state'].isin(['failure', 'error'])])
-            aggregated['ci_success_rate'] = aggregated['ci_successful_runs'] / aggregated['ci_total_runs']
-
-            # Retry analysis
-            retry_counts = pr_ci_data.groupby('ci_name').size()
-            aggregated['ci_avg_retries'] = retry_counts.mean()
-            aggregated['ci_max_retries'] = retry_counts.max()
-
-            # Test type diversity
-            test_types = pr_ci_data['ci_name'].unique()
-            aggregated['ci_has_build'] = any('build' in name.lower() for name in test_types)
-            aggregated['ci_has_test'] = any('test' in name.lower() for name in test_types)
-            aggregated['ci_has_lint'] = any(any(keyword in name.lower() for keyword in ['lint', 'style', 'format']) for name in test_types)
-            aggregated['ci_has_deploy'] = any('deploy' in name.lower() for name in test_types)
-
+        if ci_runs_with_duration:
+            durations = [run['ci_duration_seconds'] for run in ci_runs_with_duration]
+            
+            aggregated['ci_total_duration'] = sum(durations)
+            aggregated['ci_avg_duration'] = sum(durations) / len(durations)
+            aggregated['ci_max_duration'] = max(durations)
+            aggregated['ci_min_duration'] = min(durations)
         else:
-            # No CI runs with duration data
             aggregated.update({
                 'ci_total_duration': 0,
                 'ci_avg_duration': 0,
                 'ci_max_duration': 0,
                 'ci_min_duration': 0,
-                'ci_total_runs': len(pr_ci_data),
-                'ci_unique_tests': pr_ci_data['ci_name'].nunique(),
-                'ci_successful_runs': 0,
-                'ci_failed_runs': 0,
-                'ci_success_rate': 0,
-                'ci_avg_retries': 0,
-                'ci_max_retries': 0,
-                'ci_has_build': False,
-                'ci_has_test': False,
-                'ci_has_lint': False,
-                'ci_has_deploy': False,
             })
+
+        aggregated['ci_total_runs'] = len(ci_data)
+        aggregated['ci_unique_tests'] = len(set(run.get('ci_name', '') for run in ci_data))
+        aggregated['ci_successful_runs'] = len([run for run in ci_data if run.get('ci_state') == 'success'])
+        aggregated['ci_failed_runs'] = len([run for run in ci_data if run.get('ci_state') in ['failure', 'error']])
+        aggregated['ci_success_rate'] = aggregated['ci_successful_runs'] / aggregated['ci_total_runs'] if aggregated['ci_total_runs'] > 0 else 0
+
+        test_counts = {}
+        for run in ci_data:
+            test_name = run.get('ci_name', '')
+            test_counts[test_name] = test_counts.get(test_name, 0) + 1
+        
+        if test_counts:
+            retry_counts = list(test_counts.values())
+            aggregated['ci_avg_retries'] = sum(retry_counts) / len(retry_counts)
+            aggregated['ci_max_retries'] = max(retry_counts)
+        else:
+            aggregated['ci_avg_retries'] = 0
+            aggregated['ci_max_retries'] = 0
+
+        test_names = [run.get('ci_name', '').lower() for run in ci_data]
+        aggregated['ci_has_build'] = any('build' in name for name in test_names)
+        aggregated['ci_has_test'] = any('test' in name for name in test_names)
+        aggregated['ci_has_lint'] = any(any(keyword in name for keyword in ['lint', 'style', 'format']) for name in test_names)
+        aggregated['ci_has_deploy'] = any('deploy' in name for name in test_names)
 
         return aggregated
 
@@ -189,7 +162,6 @@ class CIFeatureEngineer:
         """Extract basic PR features."""
         features = pd.DataFrame()
 
-        # Numeric features
         numeric_columns = [
             'pr_files_changed', 'pr_additions', 'pr_deletions', 'pr_commits'
         ]
@@ -198,7 +170,6 @@ class CIFeatureEngineer:
             if col in df.columns:
                 features[col] = df[col].fillna(0)
 
-        # Boolean features
         if 'pr_is_draft' in df.columns:
             features['pr_is_draft'] = df['pr_is_draft'].astype(int)
 
@@ -208,7 +179,6 @@ class CIFeatureEngineer:
         """Extract CI-specific features."""
         features = pd.DataFrame()
 
-        # CI numeric features
         ci_numeric_columns = [
             'ci_total_duration', 'ci_avg_duration', 'ci_max_duration', 'ci_min_duration',
             'ci_total_runs', 'ci_unique_tests', 'ci_successful_runs', 'ci_failed_runs',
@@ -219,7 +189,6 @@ class CIFeatureEngineer:
             if col in df.columns:
                 features[col] = df[col].fillna(0)
 
-        # CI boolean features
         ci_boolean_columns = [
             'ci_has_build', 'ci_has_test', 'ci_has_lint', 'ci_has_deploy'
         ]
@@ -228,7 +197,6 @@ class CIFeatureEngineer:
             if col in df.columns:
                 features[col] = df[col].astype(int)
 
-        # Derived features
         if 'ci_total_runs' in features.columns and 'ci_unique_tests' in features.columns:
             features['ci_run_per_test_ratio'] = features['ci_total_runs'] / (features['ci_unique_tests'] + 1)
 
@@ -244,11 +212,10 @@ class CIFeatureEngineer:
 
         text_data = df['pr_title'].fillna('').astype(str).tolist()
 
-        if not any(text_data):  # All empty strings
+        if not any(text_data):
             return None
 
         try:
-            # Initialize TF-IDF vectorizer if not already done
             if self.tfidf_vectorizer is None:
                 self.tfidf_vectorizer = TfidfVectorizer(
                     max_features=self.config.max_ci_text_features,
@@ -260,17 +227,14 @@ class CIFeatureEngineer:
                     sublinear_tf=True
                 )
 
-            # Fit and transform text data
             if not self.is_fitted:
                 tfidf_matrix = self.tfidf_vectorizer.fit_transform(text_data)
             else:
                 tfidf_matrix = self.tfidf_vectorizer.transform(text_data)
 
-            # Check if transformation was successful
             if tfidf_matrix is None or tfidf_matrix.shape[1] == 0:  # type: ignore
                 return None
 
-            # Convert to DataFrame
             feature_names = [f"ci_tfidf_{i}" for i in range(tfidf_matrix.shape[1])]  # type: ignore
             text_features = pd.DataFrame(
                 tfidf_matrix.toarray(),  # type: ignore
@@ -286,12 +250,10 @@ class CIFeatureEngineer:
 
     def _encode_categorical_features(self, df: pd.DataFrame) -> pd.DataFrame:
         """Encode categorical features."""
-        # For now, we don't have categorical features to encode beyond boolean ones
         return df
 
     def _handle_missing_values(self, df: pd.DataFrame) -> pd.DataFrame:
         """Handle missing values in features."""
-        # Fill numeric columns with 0
         numeric_columns = df.select_dtypes(include=[np.number]).columns
         df[numeric_columns] = df[numeric_columns].fillna(0)
 
@@ -299,11 +261,9 @@ class CIFeatureEngineer:
 
     def _balance_feature_weights(self, df: pd.DataFrame) -> pd.DataFrame:
         """Balance the influence of text features vs structural features."""
-        # Identify text features
         text_cols = [col for col in df.columns if col.startswith('ci_tfidf_')]
         
         if text_cols:
-            # Apply weighting factor to reduce text feature influence
             text_weight_factor = self.config.ci_text_feature_weight
             
             df_balanced = df.copy()
@@ -318,20 +278,16 @@ class CIFeatureEngineer:
     def _extract_target(self, df: pd.DataFrame, target_type: str) -> Optional[pd.Series]:
         """Extract target variable based on type."""
         if target_type == 'duration':
-            # Predict total CI duration
             if 'ci_total_duration' in df.columns:
-                # Convert to hours for consistency with PR model
-                target = df['ci_total_duration'] / 3600
-                return target[target > 0]  # Only positive durations
+                target = df['ci_total_duration'] / 3600  # Convert to hours for consistency with PR model
+                return target[target > 0]
             
         elif target_type == 'attempts':
-            # Predict number of CI attempts needed
             if 'ci_avg_retries' in df.columns:
                 target = df['ci_avg_retries']
                 return target[target >= 0]  # type: ignore
             
         elif target_type == 'success':
-            # Predict CI success rate
             if 'ci_success_rate' in df.columns:
                 target = df['ci_success_rate']
                 return target[(target >= 0) & (target <= 1)]  # type: ignore
@@ -351,14 +307,12 @@ class CIFeatureEngineer:
         Returns:
             Tuple of (scaled_X_train, scaled_X_test)
         """
-        # Fit scaler on training data
         X_train_scaled = pd.DataFrame(
             self.scaler.fit_transform(X_train),
             columns=X_train.columns,
             index=X_train.index
         )
 
-        # Transform test data
         X_test_scaled = pd.DataFrame(
             self.scaler.transform(X_test),
             columns=X_test.columns,

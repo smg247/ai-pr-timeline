@@ -25,18 +25,15 @@ logging.basicConfig(
 )
 
 def main():
-    parser = argparse.ArgumentParser(description='Train PR timeline prediction model')
-    parser.add_argument('--repo', required=True, help='Repository name (owner/repo)')
-    parser.add_argument('--token', help='GitHub token (or set GITHUB_TOKEN env var)')
+    parser = argparse.ArgumentParser(description='Train PR timeline prediction model using cached data')
+    parser.add_argument('--repos', required=True, nargs='+',
+                       help='Repository names in format owner/repo (uses cached data)')
+
     parser.add_argument('--model-type', default='random_forest', 
                        choices=['random_forest', 'xgboost', 'lightgbm'],
                        help='Type of model to train')
     parser.add_argument('--tune-hyperparams', action='store_true',
                        help='Perform hyperparameter tuning')
-    parser.add_argument('--max-prs', type=int, default=1000,
-                       help='Maximum number of PRs to collect')
-    parser.add_argument('--max-new-prs', type=int,
-                       help='Maximum number of new PRs to fetch from API (must be <= max-prs)')
     parser.add_argument('--text-weight', type=float, default=0.3,
                        help='Weight factor for text features (0.0-1.0, default: 0.3)')
     parser.add_argument('--max-text-features', type=int, default=50,
@@ -46,22 +43,12 @@ def main():
     
     args = parser.parse_args()
     
-    # Set up configuration
+    # Set up configuration (no GitHub token needed for cache-only training)
     config = Config()
-    config.github_token = args.token or os.getenv('GITHUB_TOKEN')
+    config.github_token = None  # Not needed for training with cached data
     config.model_type = args.model_type
-    config.max_prs_per_repo = args.max_prs
     config.text_feature_weight = args.text_weight
     config.max_text_features = args.max_text_features
-    
-    if not config.github_token:
-        print("Error: GitHub token is required. Set GITHUB_TOKEN environment variable or use --token")
-        sys.exit(1)
-    
-    # Validate max-new-prs parameter
-    if args.max_new_prs and args.max_new_prs > args.max_prs:
-        print(f"Error: --max-new-prs ({args.max_new_prs}) cannot be greater than --max-prs ({args.max_prs})")
-        sys.exit(1)
     
     # Validate text-weight parameter
     if not 0.0 <= args.text_weight <= 1.0:
@@ -74,26 +61,19 @@ def main():
         sys.exit(1)
     
     try:
-        # Initialize predictor
-        predictor = PRTimelinePredictor(config)
+        # Initialize predictor in cache-only mode
+        predictor = PRTimelinePredictor(config, cache_only=True)
         
-        print(f"Training model on repository: {args.repo}")
+        print(f"Training model on repositories: {', '.join(args.repos)}")
         print(f"Model type: {args.model_type}")
-        print(f"Max PRs to collect: {args.max_prs}")
-        if args.max_new_prs:
-            print(f"Max new PRs from API: {args.max_new_prs}")
         print(f"Text feature settings: max={args.max_text_features}, weight={args.text_weight}")
+        print(f"Using cached data only (no API calls)")
         print("-" * 50)
         
-        # Reset API call counter for training
-        predictor.data_collector.reset_api_call_count()
-        
-        # Train the model
-        results = predictor.train_on_repository(
-            args.repo,
+        # Train the model using cached data only
+        results = predictor.train_on_cached_data(
+            repo_names=args.repos,
             model_type=args.model_type,
-            limit=args.max_prs,
-            max_new_prs=args.max_new_prs,
             hyperparameter_tuning=args.tune_hyperparams
         )
         
@@ -103,7 +83,8 @@ def main():
         else:
             # Auto-generate filename with timestamp
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            model_filename = f"{args.repo.replace('/', '_')}_{args.model_type}_model_{timestamp}.pkl"
+            repos_str = "_".join(repo.replace('/', '-') for repo in args.repos)
+            model_filename = f"{repos_str}_{args.model_type}_model_{timestamp}.pkl"
         
         predictor.save_model(model_filename)
         
@@ -111,7 +92,7 @@ def main():
         print(f"Data points used: {results['data_points']}")
         print(f"Training set size: {results['training_size']}")
         print(f"Test set size: {results['test_size']}")
-        print(f"Total API calls made: {predictor.data_collector.get_api_call_count()}")
+        print(f"Repositories: {', '.join(args.repos)}")
         
         print("\nModel Performance:")
         metrics = results['metrics']
@@ -125,6 +106,7 @@ def main():
             print(f"  {i:2d}. {feature['feature']}: {feature['importance']:.4f}")
         
         print(f"\nModel saved successfully as: {model_filename}")
+        print(f"\n💡 Tip: Use collect_data.py to refresh cached data when needed")
         
     except Exception as e:
         print(f"Error during training: {e}")
