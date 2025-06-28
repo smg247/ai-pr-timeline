@@ -4,6 +4,7 @@ Data collection module for fetching both PR and CI data from GitHub API.
 
 import time
 import logging
+import re
 from typing import List, Dict, Optional, Tuple, Any
 import pandas as pd
 import requests
@@ -329,6 +330,7 @@ class GitHubDataCollector:
     def _extract_pr_ci_data(self, pr, repo_name: str) -> List[Dict]:
         """Extract CI data from a single PR."""
         ci_runs = []
+        seen_target_urls = set()
         
         try:
             commits = list(pr.get_commits())
@@ -340,37 +342,37 @@ class GitHubDataCollector:
             self._log_api_call(f"GET /repos/{repo_name}/statuses/{latest_commit.sha}", 
                              f"PR #{pr.number} status checks")
             statuses = list(latest_commit.get_statuses())
-            
-            try:
-                self._log_api_call(f"GET /repos/{repo_name}/commits/{latest_commit.sha}/check-runs", 
-                                 f"PR #{pr.number} check runs")
-                check_runs = list(latest_commit.get_check_runs())
-            except Exception as e:
-                logger.debug(f"Could not get check runs for PR #{pr.number}: {e}")
-                check_runs = []
 
             for status in statuses:
                 ci_run_data = self._extract_status_data(status, pr, repo_name)
                 if ci_run_data:
-                    ci_runs.append(ci_run_data)
-
-            for check_run in check_runs:
-                ci_run_data = self._extract_check_run_data(check_run, pr, repo_name)
-                if ci_run_data:
-                    ci_runs.append(ci_run_data)
+                    target_url = ci_run_data.get('ci_target_url')
+                    if target_url and target_url not in seen_target_urls:
+                        ci_runs.append(ci_run_data)
+                        seen_target_urls.add(target_url)
+                    elif target_url in seen_target_urls:
+                        logger.debug(f"Skipping duplicate CI run with target URL: {target_url}")
 
         except Exception as e:
             logger.warning(f"Error extracting CI data from PR #{pr.number}: {e}")
 
+        logger.debug(f"Extracted {len(ci_runs)} unique CI runs from PR #{pr.number}")
         return ci_runs
 
     def _extract_status_data(self, status, pr, repo_name: str) -> Optional[Dict]:
         """Extract normalized data from a GitHub status check."""
         try:
-            duration_seconds = None
-            if hasattr(status, 'created_at') and hasattr(status, 'updated_at'):
-                if status.created_at and status.updated_at:
-                    duration_seconds = (status.updated_at - status.created_at).total_seconds()
+            # Skip entries without target URLs
+            if not status.target_url:
+                logger.debug(f"Skipping CI run '{status.context}' - no target URL")
+                return None
+            
+            # Only process Prow CI URLs that contain duration information
+            if not status.target_url.startswith('https://prow.ci.openshift.org/view/gs'):
+                logger.debug(f"Skipping CI run '{status.context}' - not a Prow CI URL: {status.target_url}")
+                return None
+                
+            duration_seconds = self._extract_ci_duration_from_url(status.target_url)
 
             return {
                 'ci_name': status.context,
@@ -382,21 +384,113 @@ class GitHubDataCollector:
             logger.debug(f"Error extracting status data: {e}")
             return None
 
-    def _extract_check_run_data(self, check_run, pr, repo_name: str) -> Optional[Dict]:
-        """Extract normalized data from a GitHub check run."""
+    def _extract_ci_duration_from_url(self, target_url: str) -> Optional[float]:
+        """Extract CI duration from Prow CI URL by fetching JSON artifacts."""
+        if not target_url or self.cache_only or self.session is None:
+            return None
+            
+        # Only handle Prow CI URLs
+        if not target_url.startswith('https://prow.ci.openshift.org/view/gs'):
+            return None
+            
         try:
-            duration_seconds = None
-            if check_run.started_at and check_run.completed_at:
-                duration_seconds = (check_run.completed_at - check_run.started_at).total_seconds()
-
-            return {
-                'ci_name': check_run.name,
-                'ci_target_url': check_run.html_url,
-                'ci_state': check_run.conclusion or check_run.status,
-                'ci_duration_seconds': duration_seconds
-            }
+            # For Prow CI, try to get timing from started.json and finished.json artifacts
+            duration_seconds = self._extract_prow_duration(target_url)
+            
+            if duration_seconds is not None:
+                logger.debug(f"Extracted Prow duration: {duration_seconds}s from {target_url}")
+            
+            return duration_seconds
+            
         except Exception as e:
-            logger.debug(f"Error extracting check run data: {e}")
+            logger.debug(f"Error extracting Prow duration from {target_url}: {e}")
+            return None
+
+    def _extract_prow_duration(self, prow_url: str) -> Optional[float]:
+        """Extract duration from Prow CI by fetching JSON artifacts."""
+        if self.session is None:
+            return None
+            
+        try:
+            gcsweb_url = self._transform_prow_to_gcsweb_url(prow_url)
+            if not gcsweb_url:
+                logger.warning(f"Could not transform Prow URL to GCS web URL: {prow_url}")
+                return None
+            
+            self._log_api_call(f"GET {gcsweb_url}", "Fetching Prow prowjob.json from GCS")
+            prowjob_response = self.session.get(gcsweb_url, timeout=10)
+            
+            if prowjob_response.status_code == 200:
+                try:
+                    prowjob_data = prowjob_response.json()
+                    
+                    started_time = prowjob_data.get('status', {}).get('startTime')
+                    finished_time = prowjob_data.get('status', {}).get('completionTime')
+                    logger.info(f"Started time: {started_time}, Finished time: {finished_time}")
+                    
+                    if started_time and finished_time:
+                        start_dt = datetime.fromisoformat(started_time.replace('Z', '+00:00'))
+                        finish_dt = datetime.fromisoformat(finished_time.replace('Z', '+00:00'))
+                        
+                        duration_seconds = (finish_dt - start_dt).total_seconds()
+                        
+                        # Sanity check: duration should be reasonable (< 24 hours)
+                        if 0 < duration_seconds < 86400:
+                            return float(duration_seconds)
+                    else:
+                        logger.warning(f"Missing timestamps in prowjob.json")
+                        
+                except (ValueError, KeyError) as e:
+                    logger.error(f"Error parsing Prow JSON artifacts: {e}")
+            else:
+                logger.warning(f"Failed to fetch prowjob.json: {prowjob_response.status_code}")
+            
+        except Exception as e:
+            logger.error(f"Error fetching Prow artifacts: {e}")
+            return None
+
+    def _transform_prow_to_gcsweb_url(self, prow_url: str) -> Optional[str]:
+        """
+        Transform a Prow view URL to a GCS web URL for accessing prowjob.json.
+        
+        Example transformation:
+        From: https://prow.ci.openshift.org/view/gs/test-platform-results/pr-logs/pull/openshift_ci-tools/4595/pull-ci-openshift-ci-tools-main-images/1938431767732031488
+        To:   https://gcsweb-ci.apps.ci.l2s4.p1.openshiftapps.com/gcs/test-platform-results/pr-logs/pull/openshift_ci-tools/4595/pull-ci-openshift-ci-tools-main-images/1938431767732031488/prowjob.json
+        """
+        if not prow_url or not prow_url.startswith('https://prow.ci.openshift.org/view/gs/'):
+            return None
+        
+        try:
+            gcs_path = prow_url.replace('https://prow.ci.openshift.org/view/gs/', '')
+            gcs_path = gcs_path.rstrip('/')
+            gcsweb_base = 'https://gcsweb-ci.apps.ci.l2s4.p1.openshiftapps.com/gcs'
+            gcsweb_url = f"{gcsweb_base}/{gcs_path}/prowjob.json"
+            return gcsweb_url
+            
+        except Exception as e:
+            logger.debug(f"Error transforming Prow URL: {e}")
+            return None
+
+    def _parse_time_string(self, time_str: str) -> Optional[float]:
+        """Parse time strings like '30m45s' or '1h30m' into seconds."""
+        try:
+            total_seconds = 0.0
+            
+            # Look for hours, minutes, seconds
+            hours_match = re.search(r'(\d+)h', time_str, re.IGNORECASE)
+            minutes_match = re.search(r'(\d+)m', time_str, re.IGNORECASE)
+            seconds_match = re.search(r'(\d+)s', time_str, re.IGNORECASE)
+            
+            if hours_match:
+                total_seconds += int(hours_match.group(1)) * 3600
+            if minutes_match:
+                total_seconds += int(minutes_match.group(1)) * 60
+            if seconds_match:
+                total_seconds += int(seconds_match.group(1))
+            
+            return total_seconds if total_seconds > 0 else None
+            
+        except (ValueError, AttributeError):
             return None
 
     def _is_bot_author(self, pr) -> bool:
