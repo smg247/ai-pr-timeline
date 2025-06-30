@@ -171,7 +171,7 @@ class CIFeatureEngineer:
                 features[col] = df[col].fillna(0)
 
         if 'pr_is_draft' in df.columns:
-            features['pr_is_draft'] = df['pr_is_draft'].astype(int)
+            features['pr_is_draft'] = df['pr_is_draft'].fillna(False).astype(int)
 
         return features
 

@@ -95,7 +95,7 @@ class FeatureEngineer:
             features['created_day'] = df['created_day']
 
         if 'is_draft' in df.columns:
-            features['is_draft'] = df['is_draft'].astype(int)
+            features['is_draft'] = df['is_draft'].fillna(False).astype(int)
 
         return features
 
@@ -113,11 +113,11 @@ class FeatureEngineer:
             features['comments_per_commit'] = df['comment_count'] / (df['commit_count'] + 1)
 
         if 'created_hour' in df.columns:
-            features['is_business_hours'] = ((df['created_hour'] >= 9) &
-                                           (df['created_hour'] <= 17)).astype(int)  # Business hours (9 AM to 5 PM)
+            features['is_business_hours'] = ((df['created_hour'].fillna(-1) >= 9) &
+                                           (df['created_hour'].fillna(-1) <= 17)).astype(int)  # Business hours (9 AM to 5 PM)
 
         if 'created_day' in df.columns:
-            features['is_weekend'] = (df['created_day'].isin([5, 6])).astype(int)  # Weekend (Saturday=5, Sunday=6)
+            features['is_weekend'] = (df['created_day'].fillna(-1).isin([5, 6])).astype(int)  # Weekend (Saturday=5, Sunday=6)
 
         return features
 
