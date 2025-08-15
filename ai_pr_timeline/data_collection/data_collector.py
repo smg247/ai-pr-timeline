@@ -216,7 +216,6 @@ class GitHubDataCollector:
         return pr_df, ci_df
 
     def collect_multiple_repos(self, repo_names: List[str],
-                             limit_per_repo: Optional[int] = None,
                              max_new_prs_per_repo: Optional[int] = None,
                              collect_pr_data: bool = True,
                              collect_ci_data: bool = True) -> Tuple[pd.DataFrame, pd.DataFrame]:
@@ -225,7 +224,6 @@ class GitHubDataCollector:
 
         Args:
             repo_names: List of repository names
-            limit_per_repo: Maximum number of PRs to collect per repository
             max_new_prs_per_repo: Maximum number of new PRs to fetch from API per repository
             collect_pr_data: Whether to collect PR data
             collect_ci_data: Whether to collect CI data
@@ -239,8 +237,8 @@ class GitHubDataCollector:
         for repo_name in repo_names:
             try:
                 pr_df, ci_df = self.collect_all_data(
-                    repo_name, limit_per_repo, max_new_prs_per_repo,
-                    collect_pr_data, collect_ci_data
+                    repo_name, max_new_prs=max_new_prs_per_repo,
+                    collect_pr_data=collect_pr_data, collect_ci_data=collect_ci_data
                 )
                 if not pr_df.empty and collect_pr_data:
                     all_pr_data.append(pr_df)
@@ -257,20 +255,6 @@ class GitHubDataCollector:
         logger.info(f"Collected total of {len(combined_pr_df)} PRs and {len(combined_ci_df)} CI runs from {len(repo_names)} repositories")
         
         return combined_pr_df, combined_ci_df
-
-    def collect_pr_data_only(self, repo_name: str, limit: Optional[int] = None, 
-                           max_new_prs: Optional[int] = None) -> pd.DataFrame:
-        """Collect only PR data (for backward compatibility)."""
-        pr_df, _ = self.collect_all_data(repo_name, limit, max_new_prs, 
-                                        collect_pr_data=True, collect_ci_data=False)
-        return pr_df
-
-    def collect_ci_data_only(self, repo_name: str, limit: Optional[int] = None, 
-                           max_new_prs: Optional[int] = None) -> pd.DataFrame:
-        """Collect only CI data (for backward compatibility)."""
-        _, ci_df = self.collect_all_data(repo_name, limit, max_new_prs, 
-                                        collect_pr_data=False, collect_ci_data=True)
-        return ci_df
 
     def _extract_pr_features(self, pr) -> Dict:
         """Extract features from a single PR."""

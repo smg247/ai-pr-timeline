@@ -167,7 +167,7 @@ class PRTimelinePredictor:
         logger.info(f"Training model on {len(repo_names)} repositories")
 
         # Collect data from multiple repositories
-        df, _ = self.data_collector.collect_multiple_repos(repo_names, limit_per_repo, max_new_prs_per_repo,
+        df, _ = self.data_collector.collect_multiple_repos(repo_names, max_new_prs_per_repo=max_new_prs_per_repo,
                                                           collect_pr_data=True, collect_ci_data=False)
 
         if len(df) < self.config.min_data_points:

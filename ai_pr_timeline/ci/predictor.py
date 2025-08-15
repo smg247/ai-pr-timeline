@@ -140,12 +140,12 @@ class CIPredictor:
 
         if len(repo_names) == 1:
             _, _ = self.data_collector.collect_all_data(
-                repo_names[0], limit_per_repo, max_new_prs_per_repo,
+                repo_names[0], max_new_prs=max_new_prs_per_repo,
                 collect_pr_data=True, collect_ci_data=True  # Need PR data for normalization
             )
         else:
             _, _ = self.data_collector.collect_multiple_repos(
-                repo_names, limit_per_repo, max_new_prs_per_repo,
+                repo_names, max_new_prs_per_repo=max_new_prs_per_repo,
                 collect_pr_data=True, collect_ci_data=True  # Need PR data for normalization
             )
 

@@ -7,7 +7,7 @@ from unittest.mock import Mock, patch, MagicMock
 import pandas as pd
 import numpy as np
 
-from ai_pr_timeline.predictor import PRTimelinePredictor
+from ai_pr_timeline import PRTimelinePredictor
 from ai_pr_timeline.config import Config
 
 class TestPRTimelinePredictor(unittest.TestCase):
@@ -19,15 +19,15 @@ class TestPRTimelinePredictor(unittest.TestCase):
         self.config.github_token = "test_token"
         self.config.min_data_points = 10
     
-    @patch('ai_pr_timeline.predictor.GitHubDataCollector')
-    @patch('ai_pr_timeline.predictor.ModelTrainer')
+    @patch('ai_pr_timeline.merge_time.predictor.GitHubDataCollector')
+    @patch('ai_pr_timeline.merge_time.predictor.ModelTrainer')
     def test_init(self, mock_trainer, mock_collector):
         """Test predictor initialization."""
         predictor = PRTimelinePredictor(self.config)
         
         self.assertEqual(predictor.config, self.config)
         self.assertFalse(predictor.is_trained)
-        mock_collector.assert_called_once_with(self.config)
+        mock_collector.assert_called_once_with(self.config, cache_only=False)
         mock_trainer.assert_called_once_with(self.config)
     
     def test_get_model_metrics(self):
@@ -37,8 +37,8 @@ class TestPRTimelinePredictor(unittest.TestCase):
         with self.assertRaises(ValueError):
             predictor.get_model_metrics()
     
-    @patch('ai_pr_timeline.predictor.GitHubDataCollector')
-    @patch('ai_pr_timeline.predictor.ModelTrainer')
+    @patch('ai_pr_timeline.merge_time.predictor.GitHubDataCollector')
+    @patch('ai_pr_timeline.merge_time.predictor.ModelTrainer')
     def test_predict_pr_timeline_not_trained(self, mock_trainer, mock_collector):
         """Test prediction when model is not trained."""
         predictor = PRTimelinePredictor(self.config)
