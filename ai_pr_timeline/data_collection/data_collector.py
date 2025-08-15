@@ -602,6 +602,7 @@ class GitHubDataCollector:
 
     def save_data(self, df: pd.DataFrame, filename: str) -> None:
         """Save collected data to file."""
+        self.config.ensure_directories()
         filepath = f"{self.config.data_dir}/{filename}"
         df.to_csv(filepath, index=False)
         logger.info(f"Data saved to {filepath}")

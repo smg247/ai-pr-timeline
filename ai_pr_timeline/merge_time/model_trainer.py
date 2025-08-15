@@ -287,7 +287,8 @@ class ModelTrainer:
         """Save the trained model and feature engineer."""
         if self.model is None:
             raise ValueError("No model to save")
-
+        
+        self.config.ensure_directories()
         model_path = f"{self.config.model_dir}/{filename}"
 
         # Create a sanitized config without sensitive information
@@ -320,6 +321,7 @@ class ModelTrainer:
 
     def load_model(self, filename: str) -> None:
         """Load a trained model and feature engineer."""
+        self.config.ensure_directories()
         model_path = f"{self.config.model_dir}/{filename}"
 
         model_data = joblib.load(model_path)

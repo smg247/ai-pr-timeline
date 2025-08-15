@@ -317,7 +317,8 @@ class CIModelTrainer:
         """Save the trained CI model and feature engineer."""
         if self.model is None:
             raise ValueError("No CI model to save")
-
+        
+        self.config.ensure_directories()
         model_path = f"{self.config.model_dir}/{filename}"
 
         # Create a sanitized config without sensitive information
@@ -356,6 +357,7 @@ class CIModelTrainer:
 
     def load_model(self, filename: str) -> None:
         """Load a trained CI model and feature engineer."""
+        self.config.ensure_directories()
         model_path = f"{self.config.model_dir}/{filename}"
 
         model_data = joblib.load(model_path)

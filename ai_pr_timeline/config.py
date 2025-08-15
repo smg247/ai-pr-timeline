@@ -48,8 +48,9 @@ class Config:
     def __post_init__(self):
         """Load configuration from environment variables."""
         self.github_token = os.getenv("GITHUB_TOKEN", self.github_token)
-
-        # Create directories if they don't exist
+    
+    def ensure_directories(self):
+        """Create directories if they don't exist. Call this before using the directories."""
         os.makedirs(self.data_dir, exist_ok=True)
         os.makedirs(self.model_dir, exist_ok=True)
         os.makedirs(self.cache_dir, exist_ok=True)
