@@ -29,6 +29,8 @@ def main():
     parser.add_argument('--log-level', default='INFO',
                        choices=['DEBUG', 'INFO', 'WARNING', 'ERROR'],
                        help='Logging level')
+    parser.add_argument('--cache-dir', type=str,
+                       help='Directory to store cached data (default: training_cache)')
     
     args = parser.parse_args()
     
@@ -43,6 +45,10 @@ def main():
     config = Config()
     config.github_token = args.token or os.getenv('GITHUB_TOKEN')
     
+    # Override cache directory if provided
+    if args.cache_dir:
+        config.training_cache_dir = args.cache_dir
+    
     if not config.github_token:
         print("Error: GitHub token is required. Set GITHUB_TOKEN environment variable or use --token")
         sys.exit(1)
@@ -54,6 +60,7 @@ def main():
         print(f"🔄 Collecting data from repositories: {', '.join(args.repos)}")
         print(f"🆕 Max new PRs from API per repository: {args.max_new_prs}")
         print(f"📊 Data type: {args.data_type}")
+        print(f"💾 Cache directory: {config.training_cache_dir}")
         if args.force_refresh:
             print("🔄 Force refresh enabled - ignoring cache")
         print("-" * 60)
@@ -111,6 +118,7 @@ def main():
         print(f"Total PRs in cache: {cache_stats.get('total_prs', 0)}")
         
         print(f"\n✅ Data collection completed successfully!")
+        print(f"💾 Data stored in: {config.training_cache_dir}")
         print(f"💡 Use train_model.py or train_ci_model.py to train models with this cached data")
         
     except Exception as e:
